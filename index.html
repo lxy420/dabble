@@ -125,8 +125,20 @@
 
 <script>
     let localStream = new MediaStream(), currentCall, dataConn, screenStream;
+    let connectionTimeout;
+    
     const shortRoomId = Math.floor(100000 + Math.random() * 900000).toString();
-    let peer = new Peer(shortRoomId); 
+    
+    // NEW: Robust WebRTC Configuration with Google STUN servers
+    let peer = new Peer(shortRoomId, {
+        config: {
+            'iceServers': [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
+            ]
+        }
+    }); 
 
     let isAudioMuted = false;
     let isVideoOff = false;
@@ -146,14 +158,11 @@
 
     async function initMedia() {
         try {
-            // Get initial default stream to ask for permissions
             localStream = await navigator.mediaDevices.getUserMedia({ 
                 video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } }, 
                 audio: true 
             });
             document.getElementById('localVideo').srcObject = localStream;
-            
-            // Once permission is granted, we can list the devices
             loadDevices();
         } catch (e) { addChatMessage("sys", "Camera/Mic blocked."); }
         
@@ -192,12 +201,8 @@
         const audioId = document.getElementById('audioSource').value;
         const videoId = document.getElementById('videoSource').value;
         
-        // Stop current tracks to free up the hardware
-        if (localStream) {
-            localStream.getTracks().forEach(track => track.stop());
-        }
+        if (localStream) localStream.getTracks().forEach(track => track.stop());
 
-        // Request new stream with specific devices
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: { deviceId: audioId ? { exact: audioId } : undefined },
             video: { 
@@ -206,23 +211,15 @@
             }
         });
 
-        // Update local video element
-        if (!screenStream) {
-            document.getElementById('localVideo').srcObject = localStream;
-        }
+        if (!screenStream) document.getElementById('localVideo').srcObject = localStream;
 
-        // Live swap tracks in the active peer connection
         if (currentCall && currentCall.peerConnection) {
             const audioSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
             const videoSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-            
             if (audioSender) audioSender.replaceTrack(localStream.getAudioTracks()[0]);
-            
-            // Only replace video track if we aren't currently screen sharing
             if (videoSender && !screenStream) videoSender.replaceTrack(localStream.getVideoTracks()[0]);
         }
 
-        // Reset toggles to ON since we just requested fresh active hardware
         isAudioMuted = false;
         isVideoOff = false;
         document.getElementById('micBtn').innerText = "🎤 Mute";
@@ -258,7 +255,7 @@
 
     peer.on('error', err => { 
         if (err.type === 'unavailable-id') alert("Room ID collision! Please refresh.");
-        else addChatMessage("sys", `Connection Error: ${err.type}`); 
+        else addChatMessage("sys", `Server Error: ${err.type}`); 
     });
 
     // --- Host & Join Logic ---
@@ -267,7 +264,11 @@
         addChatMessage("sys", "Waiting for someone to join using your Room ID...");
         requestNotificationPermission();
 
-        peer.on('connection', conn => { dataConn = conn; setupDataHandlers(); });
+        peer.on('connection', conn => { 
+            dataConn = conn; 
+            setupDataHandlers(); 
+        });
+        
         peer.on('call', call => {
             currentCall = call;
             call.answer(localStream);
@@ -281,7 +282,19 @@
         addChatMessage("sys", "Connecting to room...");
         requestNotificationPermission();
 
+        // NEW: Timeout handler if the connection hangs
+        connectionTimeout = setTimeout(() => {
+            addChatMessage("sys", "Connection timed out. Ensure the host is still on the page and try again.");
+        }, 10000);
+
         dataConn = peer.connect(hostId);
+        
+        // NEW: Specific error listener for the connection attempt
+        dataConn.on('error', (err) => {
+            clearTimeout(connectionTimeout);
+            addChatMessage("sys", `Connection failed: ${err}`);
+        });
+
         setupDataHandlers();
 
         currentCall = peer.call(hostId, localStream);
@@ -369,6 +382,7 @@
     // --- Data Channel & Messaging ---
     function setupDataHandlers() {
         dataConn.on('open', () => {
+            clearTimeout(connectionTimeout); // Clear the timeout on success
             addChatMessage("sys", "Handshake Complete! Connection is live.");
             document.getElementById('myIdDisplay').style.display = 'none';
         });
