@@ -5,7 +5,7 @@
     <title>Dabble | Ultra P2P</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        :root { --bg-main: #ff11ff; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
+        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
@@ -122,12 +122,12 @@
 <script>
     // --- NATIVE WEBRTC VARIABLES ---
     let localStream = new MediaStream(), screenStream;
-    let remoteStream = new MediaStream(); // Dedicated object to catch incoming video securely
+    let remoteStream = new MediaStream(); 
     let pc; 
     let dataConn; 
     let mqttClient; 
     let currentRoomId = null;
-    let iceQueue = []; // Solves the race condition by catching early video pathways
+    let iceQueue = []; 
 
     let isAudioMuted = false, isVideoOff = false;
     const CHUNK_SIZE = 65536; 
@@ -139,10 +139,15 @@
         audio: { echoCancellation: true, noiseSuppression: true } 
     };
 
+    // --- NEW: ARMORED NETWORK CONFIGURATION ---
+    // Includes Google STUN and Metered.ca's public TURN servers to bypass strict NAT firewalls.
     const webrtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
         ]
     };
 
@@ -161,19 +166,15 @@
     function initWebRTC(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
         
-        // Ensure remote stream is clean and mounted
         remoteStream = new MediaStream();
         document.getElementById('remoteVideo').srcObject = remoteStream;
 
-        // Send our local video/audio tracks
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-        // Dynamically catch and display their video/audio as soon as it arrives
         pc.ontrack = e => { 
             remoteStream.addTrack(e.track); 
         };
 
-        // Handle network connection routing
         pc.onicecandidate = e => {
             if (e.candidate && mqttClient) {
                 const topic = isHost ? `dabble/${currentRoomId}/joiner` : `dabble/${currentRoomId}/host`;
@@ -181,20 +182,22 @@
             }
         };
 
+        // NEW: Improved state logic. 
         pc.oniceconnectionstatechange = () => {
+            console.log("WebRTC State:", pc.iceConnectionState);
             if (pc.iceConnectionState === 'connected') {
                 applySenderOptimizations(pc);
                 addChatMessage("sys", "Handshake Complete! Connection is live.");
                 document.getElementById('myIdDisplay').style.display = 'none';
                 
-                // Give the connection 10 seconds to finish gathering heavy media routes before closing signaling
                 if (mqttClient) {
                     setTimeout(() => {
                         if(mqttClient) { mqttClient.end(); mqttClient = null; }
                     }, 10000); 
                 }
-            } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-                addChatMessage("sys", "Peer disconnected.");
+            } else if (pc.iceConnectionState === 'failed') {
+                // Only alert on 'failed', ignore 'disconnected' as it is often temporary.
+                addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
             }
         };
     }
@@ -206,7 +209,6 @@
         addChatMessage("sys", "Connecting to signaling server...");
         requestNotificationPermission();
 
-        // Connect to EMQX Public Server via Secure WebSockets
         mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
 
         mqttClient.on('connect', () => {
@@ -231,15 +233,16 @@
             } else if (data.type === 'answer') {
                 await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                 
-                // Flush the queued video routing candidates now that we are ready
-                iceQueue.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)));
-                iceQueue = [];
+                // NEW: Safer queue flushing
+                while (iceQueue.length > 0) {
+                    pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
+                }
             
             } else if (data.type === 'ice') {
-                if (pc && pc.remoteDescription) {
-                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+                    pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
                 } else {
-                    iceQueue.push(data.candidate); // Queue it if we aren't ready yet!
+                    iceQueue.push(data.candidate); 
                 }
             }
         });
@@ -272,19 +275,19 @@
 
                 await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
                 
-                // Flush the queued video routing candidates now that we are ready
-                iceQueue.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)));
-                iceQueue = [];
+                while (iceQueue.length > 0) {
+                    pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
+                }
 
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'answer', answer: answer }));
             
             } else if (data.type === 'ice') {
-                if (pc && pc.remoteDescription) {
-                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+                    pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
                 } else {
-                    iceQueue.push(data.candidate); // Queue it if we aren't ready yet!
+                    iceQueue.push(data.candidate); 
                 }
             }
         });
