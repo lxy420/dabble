@@ -5,7 +5,7 @@
     <title>Dabble | Ultra P2P</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
+        :root { --bg-main: #0fff1f; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
@@ -161,31 +161,27 @@
         requestNotificationPermission();
     }
 
-    // --- NATIVE SIGNALING LOGIC WITH TRANSCEIVERS ---
     function initWebRTC(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
-        
         remoteStream = new MediaStream();
         document.getElementById('remoteVideo').srcObject = remoteStream;
 
-        // FORCE TRANSCEIVERS: This guarantees a video/audio slot exists even if the user has no webcam!
-        const audioTrack = localStream.getAudioTracks()[0] || null;
-        pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv', streams: [localStream] });
-        
-        const videoTrack = localStream.getVideoTracks()[0] || null;
-        pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
+        if (isHost) {
+            // ONLY the Host creates the pipelines. This guarantees no SDP mismatch crashes.
+            const audioTrack = localStream.getAudioTracks()[0] || null;
+            pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv', streams: [localStream] });
+            
+            const videoTrack = localStream.getVideoTracks()[0] || null;
+            pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
+        }
 
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
             if (e.streams && e.streams[0]) {
-                if (remoteVid.srcObject !== e.streams[0]) {
-                    remoteVid.srcObject = e.streams[0];
-                }
+                if (remoteVid.srcObject !== e.streams[0]) remoteVid.srcObject = e.streams[0];
             } else {
                 remoteStream.addTrack(e.track);
-                if (remoteVid.srcObject !== remoteStream) {
-                    remoteVid.srcObject = remoteStream;
-                }
+                if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
             }
         };
 
@@ -197,18 +193,13 @@
         };
 
         pc.oniceconnectionstatechange = () => {
+            console.log("WebRTC State:", pc.iceConnectionState);
             if (pc.iceConnectionState === 'connected') {
                 applySenderOptimizations(pc);
                 addChatMessage("sys", "Handshake Complete! Connection is live.");
                 document.getElementById('myIdDisplay').style.display = 'none';
-                
-                if (mqttClient) {
-                    setTimeout(() => {
-                        if(mqttClient) { mqttClient.end(); mqttClient = null; }
-                    }, 10000); 
-                }
             } else if (pc.iceConnectionState === 'failed') {
-                addChatMessage("sys", "Connection failed. Firewall blocked the WebRTC path.");
+                addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
             }
         };
     }
@@ -228,32 +219,33 @@
         });
 
         mqttClient.on('message', async (topic, message) => {
-            const data = JSON.parse(message.toString());
-            
-            if (data.type === 'join-request') {
-                addChatMessage("sys", "Peer found! Negotiating connection...");
-                initWebRTC(true);
+            try {
+                const data = JSON.parse(message.toString());
                 
-                dataConn = pc.createDataChannel('chat-files');
-                setupDataHandlers();
+                if (data.type === 'join-request') {
+                    addChatMessage("sys", "Peer found! Negotiating connection...");
+                    initWebRTC(true);
+                    
+                    dataConn = pc.createDataChannel('chat-files');
+                    setupDataHandlers();
 
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                mqttClient.publish(`dabble/${currentRoomId}/joiner`, JSON.stringify({ type: 'offer', offer: offer }));
-            
-            } else if (data.type === 'answer') {
-                await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    mqttClient.publish(`dabble/${currentRoomId}/joiner`, JSON.stringify({ type: 'offer', offer: offer }));
                 
-                while (iceQueue.length > 0) {
-                    pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
+                } else if (data.type === 'answer') {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
+                
+                } else if (data.type === 'ice') {
+                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
+                    } else {
+                        iceQueue.push(data.candidate); 
+                    }
                 }
-            
-            } else if (data.type === 'ice') {
-                if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                    pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
-                } else {
-                    iceQueue.push(data.candidate); 
-                }
+            } catch (err) {
+                addChatMessage("sys", "Host Negotiation Error: " + err.message);
             }
         });
     }
@@ -272,33 +264,45 @@
         });
 
         mqttClient.on('message', async (topic, message) => {
-            const data = JSON.parse(message.toString());
-            
-            if (data.type === 'offer') {
-                addChatMessage("sys", "Offer received, finalizing...");
-                initWebRTC(false);
-
-                pc.ondatachannel = (e) => {
-                    dataConn = e.channel;
-                    setupDataHandlers();
-                };
-
-                await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            try {
+                const data = JSON.parse(message.toString());
                 
-                while (iceQueue.length > 0) {
-                    pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
-                }
+                if (data.type === 'offer') {
+                    addChatMessage("sys", "Offer received, finalizing...");
+                    initWebRTC(false);
 
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'answer', answer: answer }));
-            
-            } else if (data.type === 'ice') {
-                if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                    pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
-                } else {
-                    iceQueue.push(data.candidate); 
+                    pc.ondatachannel = (e) => {
+                        dataConn = e.channel;
+                        setupDataHandlers();
+                    };
+
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                    
+                    // JOINER ONLY: Safely attach tracks to the host's existing pipelines
+                    const audioTrack = localStream.getAudioTracks()[0];
+                    const videoTrack = localStream.getVideoTracks()[0];
+                    
+                    pc.getTransceivers().forEach(t => {
+                        t.direction = 'sendrecv'; // Force bi-directional mode
+                        if (t.receiver.track.kind === 'audio' && audioTrack) t.sender.replaceTrack(audioTrack);
+                        if (t.receiver.track.kind === 'video' && videoTrack) t.sender.replaceTrack(videoTrack);
+                    });
+                    
+                    while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
+
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'answer', answer: answer }));
+                
+                } else if (data.type === 'ice') {
+                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
+                    } else {
+                        iceQueue.push(data.candidate); 
+                    }
                 }
+            } catch (err) {
+                addChatMessage("sys", "Joiner Negotiation Error: " + err.message);
             }
         });
     }
@@ -343,15 +347,11 @@
                 video: videoId ? { deviceId: { exact: videoId }, ...cameraConstraints.video } : cameraConstraints.video
             });
             if (!screenStream) document.getElementById('localVideo').srcObject = localStream;
-        } catch(e) {
-            console.log("No devices found.");
-        }
+        } catch(e) { console.log("No devices found."); }
         
         if (pc) {
-            // Use Transceivers to dynamically swap the devices even if they didn't exist before
             const audioTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'audio');
             const videoTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'video');
-            
             if (audioTransceiver && localStream.getAudioTracks()[0]) audioTransceiver.sender.replaceTrack(localStream.getAudioTracks()[0]);
             if (videoTransceiver && !screenStream && localStream.getVideoTracks()[0]) videoTransceiver.sender.replaceTrack(localStream.getVideoTracks()[0]);
         }
@@ -385,7 +385,6 @@
                 videoTrack.contentHint = 'motion';
                 
                 if (pc) {
-                    // Use Transceivers to safely locate the reserved video slot
                     const videoTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'video');
                     if (videoTransceiver) {
                         const sender = videoTransceiver.sender;
