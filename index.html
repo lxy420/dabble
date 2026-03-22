@@ -5,7 +5,7 @@
     <title>Dabble | Ultra P2P</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
+        :root { --bg-main: #ff11ff; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
@@ -122,7 +122,6 @@
 <script>
     // --- NATIVE WEBRTC VARIABLES ---
     let localStream = new MediaStream(), screenStream;
-    let remoteStream = new MediaStream(); 
     let pc; 
     let dataConn; 
     let mqttClient; 
@@ -139,8 +138,7 @@
         audio: { echoCancellation: true, noiseSuppression: true } 
     };
 
-    // --- NEW: ARMORED NETWORK CONFIGURATION ---
-    // Includes Google STUN and Metered.ca's public TURN servers to bypass strict NAT firewalls.
+    // Includes Google STUN and Metered.ca's public TURN servers
     const webrtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -165,14 +163,16 @@
     // --- NATIVE SIGNALING LOGIC ---
     function initWebRTC(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
-        
-        remoteStream = new MediaStream();
-        document.getElementById('remoteVideo').srcObject = remoteStream;
 
+        // Add our local tracks so the remote peer can hear/see us
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
+        // CORRECTED: Safely mount the incoming media stream to fix the audio silence bug
         pc.ontrack = e => { 
-            remoteStream.addTrack(e.track); 
+            const remoteVid = document.getElementById('remoteVideo');
+            if (e.streams && e.streams[0]) {
+                remoteVid.srcObject = e.streams[0];
+            }
         };
 
         pc.onicecandidate = e => {
@@ -182,7 +182,6 @@
             }
         };
 
-        // NEW: Improved state logic. 
         pc.oniceconnectionstatechange = () => {
             console.log("WebRTC State:", pc.iceConnectionState);
             if (pc.iceConnectionState === 'connected') {
@@ -196,7 +195,6 @@
                     }, 10000); 
                 }
             } else if (pc.iceConnectionState === 'failed') {
-                // Only alert on 'failed', ignore 'disconnected' as it is often temporary.
                 addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
             }
         };
@@ -233,7 +231,6 @@
             } else if (data.type === 'answer') {
                 await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                 
-                // NEW: Safer queue flushing
                 while (iceQueue.length > 0) {
                     pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
                 }
@@ -360,21 +357,22 @@
         }
     }
 
+    // CORRECTED: Safe Screen Share Track Swapping (No Bitrate Hacking)
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 60 }, audio: true });
+                // Ensure audio is false so we don't accidentally hijack the microphone track
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 60 }, audio: false });
                 const videoTrack = screenStream.getVideoTracks()[0];
                 videoTrack.contentHint = 'motion';
+                
                 if (pc) {
                     const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
                     if (sender) {
-                        const params = sender.getParameters();
-                        if (params.encodings && params.encodings.length) params.encodings[0].maxBitrate = 5000000;
-                        await sender.setParameters(params);
-                        await sender.replaceTrack(videoTrack);
+                        await sender.replaceTrack(videoTrack); // Cleanly swaps video track over network
                     }
                 }
+                
                 document.getElementById('localVideo').srcObject = screenStream;
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
                 videoTrack.onended = () => { toggleScreenShare(); };
