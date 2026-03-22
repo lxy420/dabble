@@ -121,6 +121,7 @@
 
 <script>
     let localStream = new MediaStream(), screenStream;
+    let remoteStream = new MediaStream(); 
     let pc; 
     let dataConn; 
     let mqttClient; 
@@ -141,9 +142,11 @@
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
         ]
     };
 
@@ -163,23 +166,22 @@
         document.getElementById('remoteVideo').srcObject = null;
 
         if (isHost) {
-            // Host creates the foundational pipelines
             const audioTrack = localStream.getAudioTracks()[0] || null;
             pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv', streams: [localStream] });
             
             const videoTrack = localStream.getVideoTracks()[0] || null;
             pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
         } else {
-            // Joiner adds tracks properly so streams have IDs and audio links to video correctly
             localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
         }
 
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
             if (e.streams && e.streams[0]) {
-                if (remoteVid.srcObject !== e.streams[0]) {
-                    remoteVid.srcObject = e.streams[0];
-                }
+                if (remoteVid.srcObject !== e.streams[0]) remoteVid.srcObject = e.streams[0];
+            } else {
+                remoteStream.addTrack(e.track);
+                if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
             }
         };
 
@@ -191,16 +193,11 @@
         };
 
         pc.oniceconnectionstatechange = () => {
+            console.log("WebRTC State:", pc.iceConnectionState);
             if (pc.iceConnectionState === 'connected') {
                 applySenderOptimizations(pc);
                 addChatMessage("sys", "Handshake Complete! Connection is live.");
                 document.getElementById('myIdDisplay').style.display = 'none';
-                
-                if (mqttClient) {
-                    setTimeout(() => {
-                        if(mqttClient) { mqttClient.end(); mqttClient = null; }
-                    }, 10000); 
-                }
             } else if (pc.iceConnectionState === 'failed') {
                 addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
             }
@@ -280,6 +277,16 @@
                     };
 
                     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                    
+                    const audioTrack = localStream.getAudioTracks()[0];
+                    const videoTrack = localStream.getVideoTracks()[0];
+                    
+                    pc.getTransceivers().forEach(t => {
+                        t.direction = 'sendrecv';
+                        if (t.receiver.track.kind === 'audio' && audioTrack) t.sender.replaceTrack(audioTrack);
+                        if (t.receiver.track.kind === 'video' && videoTrack) t.sender.replaceTrack(videoTrack);
+                    });
+                    
                     while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
 
                     const answer = await pc.createAnswer();
@@ -299,13 +306,14 @@
         });
     }
 
-    // --- QUALITY OPTIMIZATIONS ---
     function applySenderOptimizations(peerConnection) {
         peerConnection.getSenders().forEach(sender => {
             if (sender.track && sender.track.kind === 'video') {
-                const params = sender.getParameters();
-                params.degradationPreference = 'balanced'; 
-                sender.setParameters(params).catch(e => console.error(e));
+                try {
+                    const params = sender.getParameters();
+                    params.degradationPreference = 'balanced'; 
+                    sender.setParameters(params).catch(e => console.log(e));
+                } catch(e){}
             }
         });
     }
@@ -369,48 +377,70 @@
         }
     }
 
+    // --- BULLETPROOF SCREEN SHARE LOGIC ---
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 60 }, audio: false });
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+                    video: { width: 3840, height: 2160, frameRate: 60 }, 
+                    audio: false 
+                });
                 const videoTrack = screenStream.getVideoTracks()[0];
-                videoTrack.contentHint = 'detail'; // Tells the encoder to prioritize sharp text over high framerate
                 
                 if (pc) {
-                    const videoTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'video');
+                    // Check both sender and receiver to guarantee we find the correct video pipeline
+                    const videoTransceiver = pc.getTransceivers().find(t => 
+                        (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
+                        (t.sender && t.sender.track && t.sender.track.kind === 'video')
+                    );
+                    
                     if (videoTransceiver) {
                         const sender = videoTransceiver.sender;
-                        const params = sender.getParameters();
                         
-                        // Optimize specifically for crisp screen sharing
-                        params.degradationPreference = 'maintain-resolution'; 
-                        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-                        params.encodings[0].maxBitrate = 8000000; // Bump to 8Mbps cap
-                        
-                        await sender.setParameters(params);
+                        // 1. SAFELY SWAP THE TRACK FIRST
                         await sender.replaceTrack(videoTrack);
+                        
+                        // 2. SAFELY ATTEMPT TO BOOST BITRATE
+                        try {
+                            const params = sender.getParameters();
+                            params.degradationPreference = 'balanced'; 
+                            // Only modify if the browser has actively initialized the encoding array
+                            if (params.encodings && params.encodings.length > 0) {
+                                params.encodings[0].maxBitrate = 50000000; 
+                                await sender.setParameters(params);
+                            }
+                        } catch (paramError) {
+                            console.warn("Browser prevented dynamic bitrate boost.", paramError);
+                        }
+                    } else {
+                        throw new Error("No video pipeline found to share screen into.");
                     }
                 }
                 
                 document.getElementById('localVideo').srcObject = screenStream;
-                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
+                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; 
+                document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
                 videoTrack.onended = () => { toggleScreenShare(); };
-            } catch (e) { addChatMessage("sys", "Screen share canceled or error."); }
+                
+            } catch (e) { 
+                console.error("Screen Share Error:", e);
+                addChatMessage("sys", `Screen share failed: ${e.message}`); 
+            }
         } else {
             if (pc) {
-                const videoTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'video');
+                const videoTransceiver = pc.getTransceivers().find(t => 
+                    (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
+                    (t.sender && t.sender.track && t.sender.track.kind === 'video')
+                );
                 const originalVideoTrack = localStream.getVideoTracks()[0] || null;
                 if (videoTransceiver) {
                     videoTransceiver.sender.replaceTrack(originalVideoTrack);
-                    // Reset back to balanced camera settings
-                    const params = videoTransceiver.sender.getParameters();
-                    params.degradationPreference = 'balanced';
-                    videoTransceiver.sender.setParameters(params).catch(e=>console.log(e));
                 }
             }
             document.getElementById('localVideo').srcObject = localStream;
             screenStream.getTracks().forEach(t => t.stop()); screenStream = null;
-            document.getElementById('shareBtn').innerText = "📺 Screen Share"; document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
+            document.getElementById('shareBtn').innerText = "📺 Screen Share"; 
+            document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
             if (isVideoOff && localStream.getVideoTracks().length > 0) localStream.getVideoTracks()[0].enabled = false;
         }
     }
