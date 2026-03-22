@@ -5,7 +5,7 @@
     <title>Dabble | Ultra P2P</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        :root { --bg-main: #0fff1f; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
+        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
@@ -121,7 +121,6 @@
 
 <script>
     let localStream = new MediaStream(), screenStream;
-    let remoteStream = new MediaStream(); 
     let pc; 
     let dataConn; 
     let mqttClient; 
@@ -142,11 +141,9 @@
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
         ]
     };
 
@@ -163,25 +160,26 @@
 
     function initWebRTC(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
-        remoteStream = new MediaStream();
-        document.getElementById('remoteVideo').srcObject = remoteStream;
+        document.getElementById('remoteVideo').srcObject = null;
 
         if (isHost) {
-            // ONLY the Host creates the pipelines. This guarantees no SDP mismatch crashes.
+            // Host creates the foundational pipelines
             const audioTrack = localStream.getAudioTracks()[0] || null;
             pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv', streams: [localStream] });
             
             const videoTrack = localStream.getVideoTracks()[0] || null;
             pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
+        } else {
+            // Joiner adds tracks properly so streams have IDs and audio links to video correctly
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
         }
 
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
             if (e.streams && e.streams[0]) {
-                if (remoteVid.srcObject !== e.streams[0]) remoteVid.srcObject = e.streams[0];
-            } else {
-                remoteStream.addTrack(e.track);
-                if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
+                if (remoteVid.srcObject !== e.streams[0]) {
+                    remoteVid.srcObject = e.streams[0];
+                }
             }
         };
 
@@ -193,11 +191,16 @@
         };
 
         pc.oniceconnectionstatechange = () => {
-            console.log("WebRTC State:", pc.iceConnectionState);
             if (pc.iceConnectionState === 'connected') {
                 applySenderOptimizations(pc);
                 addChatMessage("sys", "Handshake Complete! Connection is live.");
                 document.getElementById('myIdDisplay').style.display = 'none';
+                
+                if (mqttClient) {
+                    setTimeout(() => {
+                        if(mqttClient) { mqttClient.end(); mqttClient = null; }
+                    }, 10000); 
+                }
             } else if (pc.iceConnectionState === 'failed') {
                 addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
             }
@@ -277,17 +280,6 @@
                     };
 
                     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-                    
-                    // JOINER ONLY: Safely attach tracks to the host's existing pipelines
-                    const audioTrack = localStream.getAudioTracks()[0];
-                    const videoTrack = localStream.getVideoTracks()[0];
-                    
-                    pc.getTransceivers().forEach(t => {
-                        t.direction = 'sendrecv'; // Force bi-directional mode
-                        if (t.receiver.track.kind === 'audio' && audioTrack) t.sender.replaceTrack(audioTrack);
-                        if (t.receiver.track.kind === 'video' && videoTrack) t.sender.replaceTrack(videoTrack);
-                    });
-                    
                     while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
 
                     const answer = await pc.createAnswer();
@@ -307,12 +299,12 @@
         });
     }
 
+    // --- QUALITY OPTIMIZATIONS ---
     function applySenderOptimizations(peerConnection) {
-        const senders = peerConnection.getSenders();
-        senders.forEach(sender => {
+        peerConnection.getSenders().forEach(sender => {
             if (sender.track && sender.track.kind === 'video') {
                 const params = sender.getParameters();
-                params.degradationPreference = 'maintain-framerate'; 
+                params.degradationPreference = 'balanced'; 
                 sender.setParameters(params).catch(e => console.error(e));
             }
         });
@@ -382,15 +374,19 @@
             try {
                 screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 60 }, audio: false });
                 const videoTrack = screenStream.getVideoTracks()[0];
-                videoTrack.contentHint = 'motion';
+                videoTrack.contentHint = 'detail'; // Tells the encoder to prioritize sharp text over high framerate
                 
                 if (pc) {
                     const videoTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'video');
                     if (videoTransceiver) {
                         const sender = videoTransceiver.sender;
                         const params = sender.getParameters();
+                        
+                        // Optimize specifically for crisp screen sharing
+                        params.degradationPreference = 'maintain-resolution'; 
                         if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-                        params.encodings[0].maxBitrate = 5000000;
+                        params.encodings[0].maxBitrate = 8000000; // Bump to 8Mbps cap
+                        
                         await sender.setParameters(params);
                         await sender.replaceTrack(videoTrack);
                     }
@@ -404,7 +400,13 @@
             if (pc) {
                 const videoTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'video');
                 const originalVideoTrack = localStream.getVideoTracks()[0] || null;
-                if (videoTransceiver) videoTransceiver.sender.replaceTrack(originalVideoTrack);
+                if (videoTransceiver) {
+                    videoTransceiver.sender.replaceTrack(originalVideoTrack);
+                    // Reset back to balanced camera settings
+                    const params = videoTransceiver.sender.getParameters();
+                    params.degradationPreference = 'balanced';
+                    videoTransceiver.sender.setParameters(params).catch(e=>console.log(e));
+                }
             }
             document.getElementById('localVideo').srcObject = localStream;
             screenStream.getTracks().forEach(t => t.stop()); screenStream = null;
