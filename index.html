@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Dabble | Ultra P2P</title>
+    <link rel="icon" href="data:,">
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
@@ -149,8 +150,11 @@
     let receivedSize = 0;
     let isSendingFile = false;
     let cancelTransferFlag = false; 
+    
+    // Notification & Throttling Variables
     let unreadCount = 0;
     const originalTitle = "Dabble | Ultra P2P";
+    let lastReceiveUpdate = 0; 
 
     // --- Media Initialization & Fallbacks ---
     function createDummyVideoTrack() {
@@ -164,26 +168,22 @@
 
     async function initMedia() {
         try {
-            // Lowered default webcam constraint to 1080p to prevent encoder crashes
             localStream = await navigator.mediaDevices.getUserMedia({ 
                 video: { width: { ideal: 1920 }, height: { ideal: 1080 } }, 
                 audio: true 
             });
             document.getElementById('localVideo').srcObject = localStream;
         } catch (e) { 
-            // If camera is blocked/missing, try audio only
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                localStream.addTrack(createDummyVideoTrack()); // Force video pipeline open
+                localStream.addTrack(createDummyVideoTrack());
                 addChatMessage("sys", "Camera blocked. Audio active."); 
             } catch (e2) {
-                // If both fail, create completely empty dummy stream
                 localStream = new MediaStream([createDummyVideoTrack()]);
                 addChatMessage("sys", "Camera & Mic blocked. You can still chat/share screen."); 
             }
         }
         
-        // Populate settings drop-downs if devices are available
         if (navigator.mediaDevices.enumerateDevices) loadDevices();
         setupDragAndDrop();
         requestNotificationPermission();
@@ -318,17 +318,19 @@
         handleMediaStream(currentCall);
     }
 
-    // NEW: Centralized stream handler to ensure videos actually play
+    // FIX: Stops the AbortError by only injecting the stream once
     function handleMediaStream(call) {
         call.on('stream', remoteStream => { 
-            addChatMessage("sys", "Video Stream Connected!");
             const remoteVid = document.getElementById('remoteVideo');
-            remoteVid.srcObject = remoteStream; 
-            
-            // Explicitly force the video to play, circumventing browser autoplay blocks
-            remoteVid.play().catch(e => {
-                console.log("Autoplay blocked, user interaction needed.", e);
-            });
+            if (remoteVid.srcObject !== remoteStream) {
+                addChatMessage("sys", "Video Stream Connected!");
+                remoteVid.srcObject = remoteStream; 
+                
+                // Play explicitly, but safely
+                if (remoteVid.paused) {
+                    remoteVid.play().catch(e => console.log("Autoplay blocked, user interaction needed.", e));
+                }
+            }
         });
     }
 
@@ -355,20 +357,26 @@
         }
     }
 
+    // FIX: Removed manual resolution/bitrate forcing to allow safe native capture
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 2560, height: 1440, frameRate: 60 }, audio: true });
+                // Request native screen capture with high FPS preference
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+                    video: { frameRate: { ideal: 60, max: 120 } }, 
+                    audio: true 
+                });
+                
                 const videoTrack = screenStream.getVideoTracks()[0];
+                videoTrack.contentHint = 'detail'; // Keep text sharp
+                
                 if (currentCall && currentCall.peerConnection) {
                     const sender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
                     if (sender) {
-                        const params = sender.getParameters();
-                        if (params.encodings && params.encodings.length) params.encodings[0].maxBitrate = 25000000;
-                        await sender.setParameters(params);
                         await sender.replaceTrack(videoTrack);
                     }
                 }
+                
                 document.getElementById('localVideo').srcObject = screenStream;
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing";
                 document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
@@ -377,7 +385,6 @@
         } else {
             if (currentCall && currentCall.peerConnection) {
                 const sender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-                // Ensure we replace with the actual local video track, even if it's the dummy one
                 if (sender && localStream.getVideoTracks().length > 0) sender.replaceTrack(localStream.getVideoTracks()[0]);
             }
             document.getElementById('localVideo').srcObject = localStream;
@@ -444,7 +451,12 @@
             } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
                 incomingFileData.push(data);
                 receivedSize += data.byteLength;
-                document.getElementById('fileProgress').value = receivedSize;
+                
+                const now = Date.now();
+                if (now - lastReceiveUpdate > 50 || receivedSize >= incomingFileInfo.size) {
+                    document.getElementById('fileProgress').value = receivedSize;
+                    lastReceiveUpdate = now;
+                }
 
                 if (receivedSize >= incomingFileInfo.size) {
                     const blob = new Blob(incomingFileData);
@@ -497,6 +509,8 @@
         isSendingFile = true;
         cancelTransferFlag = false;
         
+        let lastSendUpdate = 0; 
+        
         document.getElementById('fileTransferUI').style.display = 'block';
         
         let labelText = `Sending: ${file.name}`;
@@ -525,7 +539,12 @@
             reader.onload = e => {
                 dataConn.send(e.target.result);
                 offset += e.target.result.byteLength;
-                progress.value = offset;
+                
+                const now = Date.now();
+                if (now - lastSendUpdate > 50 || offset >= file.size) {
+                    progress.value = offset;
+                    lastSendUpdate = now;
+                }
 
                 if (offset < file.size) {
                     if(dataConn.dataChannel && dataConn.dataChannel.bufferedAmount > 2000000) setTimeout(readNextChunk, 50);
