@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Dabble | Ultra P2P</title>
-    <link rel="icon" href="data:,">
-    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
@@ -75,11 +74,9 @@
     <div class="video-wall">
         <div class="video-card">
             <video id="localVideo" autoplay playsinline muted></video>
-            
             <div class="top-right-overlay">
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleSettings()">⚙️</button>
             </div>
-
             <div class="video-overlay">
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleAudio()" id="micBtn">🎤 Mute</button>
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleVideo()" id="camBtn">📷 Cam Off</button>
@@ -98,12 +95,10 @@
     <div class="sidebar">
         <div class="panel">
             <input type="text" id="peerIdInput" placeholder="Enter a 6-digit Room ID..." style="text-align: center; font-family: monospace; letter-spacing: 2px;">
-            
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                 <button onclick="hostRoom()">1. Create Room</button>
                 <button class="btn-secondary" onclick="joinRoom()">2. Join Room</button>
             </div>
-
             <div id="myIdDisplay">
                 Your Room ID:<br>
                 <strong id="roomCode" style="font-size:24px; color:white; display:block; margin-top:5px; user-select:all;">Loading...</strong>
@@ -118,77 +113,53 @@
                 </div>
                 <progress id="fileProgress" value="0" max="100"></progress>
             </div>
-            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Connecting to IoT Broker...</div></div>
+            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Connecting to server...</div></div>
             <input type="text" id="chatInput" placeholder="Type a message..." style="margin-bottom:0; text-align:left; font-family:inherit;">
         </div>
     </div>
 </div>
 
 <script>
-    let localStream = new MediaStream(), peerConnection, dataConn, screenStream;
+    let localStream = new MediaStream(), currentCall, dataConn, screenStream;
     let connectionTimeout;
-    let isHost = false;
-    let roomTopic = '';
-    
-    // NEW: Connect to ultra-reliable public IoT Server for signaling
-    const mqttClient = mqtt.connect('wss://test.mosquitto.org:8081');
     const shortRoomId = Math.floor(100000 + Math.random() * 900000).toString();
-
-    mqttClient.on('connect', () => {
-        addChatMessage("sys", "Broker Connected! Ready to host or join.");
-    });
+    
+    let peer = new Peer(shortRoomId, {
+        config: {
+            'iceServers': [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        }
+    }); 
 
     let isAudioMuted = false;
     let isVideoOff = false;
 
-    // File Transfer Variables
     const CHUNK_SIZE = 65536; 
-    let fileQueue = [];
-    let incomingFileInfo = null;
-    let incomingFileData = [];
-    let receivedSize = 0;
-    let isSendingFile = false;
-    let cancelTransferFlag = false; 
-    
-    // Notification & Throttling Variables
+    let fileQueue = [], incomingFileInfo = null, incomingFileData = [], receivedSize = 0, isSendingFile = false, cancelTransferFlag = false; 
+
     let unreadCount = 0;
     const originalTitle = "Dabble | Ultra P2P";
-    let lastReceiveUpdate = 0; 
 
-    // --- Media Initialization & Fallbacks ---
-    function createDummyVideoTrack() {
-        const canvas = document.createElement('canvas');
-        canvas.width = 1; canvas.height = 1;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = 'black';
-        ctx.fillRect(0, 0, 1, 1);
-        return canvas.captureStream(1).getVideoTracks()[0];
-    }
+    // --- OPTIMIZATION 1: Sane Camera Defaults ---
+    // Moved from 4K/60 to 720p/30 to save CPU while gaming.
+    const cameraConstraints = { 
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, 
+        audio: { echoCancellation: true, noiseSuppression: true } 
+    };
 
     async function initMedia() {
         try {
-            localStream = await navigator.mediaDevices.getUserMedia({ 
-                video: { width: { ideal: 1920 }, height: { ideal: 1080 } }, 
-                audio: true 
-            });
+            localStream = await navigator.mediaDevices.getUserMedia(cameraConstraints);
             document.getElementById('localVideo').srcObject = localStream;
-        } catch (e) { 
-            try {
-                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                localStream.addTrack(createDummyVideoTrack());
-                addChatMessage("sys", "Camera blocked. Audio active."); 
-            } catch (e2) {
-                localStream = new MediaStream([createDummyVideoTrack()]);
-                addChatMessage("sys", "Camera & Mic blocked. You can still chat/share screen."); 
-            }
-        }
+            loadDevices();
+        } catch (e) { addChatMessage("sys", "Camera/Mic blocked."); }
         
-        if (navigator.mediaDevices.enumerateDevices) loadDevices();
         setupDragAndDrop();
         requestNotificationPermission();
     }
 
-    // --- Settings & Device Management ---
     function toggleSettings() {
         const modal = document.getElementById('settingsModal');
         modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
@@ -198,9 +169,7 @@
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioSelect = document.getElementById('audioSource');
         const videoSelect = document.getElementById('videoSource');
-        
-        audioSelect.innerHTML = '';
-        videoSelect.innerHTML = '';
+        audioSelect.innerHTML = ''; videoSelect.innerHTML = '';
 
         devices.forEach(device => {
             const option = document.createElement('option');
@@ -222,31 +191,26 @@
         if (localStream) localStream.getTracks().forEach(track => track.stop());
 
         localStream = await navigator.mediaDevices.getUserMedia({
-            audio: { deviceId: audioId ? { exact: audioId } : undefined },
-            video: { 
-                deviceId: videoId ? { exact: videoId } : undefined,
-                width: { ideal: 1920 }, height: { ideal: 1080 }
-            }
+            audio: audioId ? { deviceId: { exact: audioId }, echoCancellation: true, noiseSuppression: true } : true,
+            video: videoId ? { deviceId: { exact: videoId }, ...cameraConstraints.video } : cameraConstraints.video
         });
 
         if (!screenStream) document.getElementById('localVideo').srcObject = localStream;
 
-        if (peerConnection) {
-            const audioSender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
-            const videoSender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (currentCall && currentCall.peerConnection) {
+            const audioSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+            const videoSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
             if (audioSender) audioSender.replaceTrack(localStream.getAudioTracks()[0]);
             if (videoSender && !screenStream) videoSender.replaceTrack(localStream.getVideoTracks()[0]);
         }
 
-        isAudioMuted = false;
-        isVideoOff = false;
+        isAudioMuted = false; isVideoOff = false;
         document.getElementById('micBtn').innerText = "🎤 Mute";
         document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
         document.getElementById('camBtn').innerText = "📷 Cam Off";
         document.getElementById('camBtn').classList.replace('btn-danger', 'btn-secondary');
     }
 
-    // --- Notifications Logic ---
     function requestNotificationPermission() {
         if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission();
     }
@@ -265,108 +229,66 @@
         if (!document.hidden) { unreadCount = 0; document.title = originalTitle; }
     });
 
-    // --- Native WebRTC & MQTT Signaling Logic ---
-    mqttClient.on('message', async (topic, message) => {
-        const payload = JSON.parse(message.toString());
-
-        // Host receiving Joiner's Offer
-        if (isHost && topic === `${roomTopic}/host`) {
-            if (payload.type === 'offer') {
-                addChatMessage("sys", "Joiner found! Finalizing handshake...");
-                setupPeerConnection();
-                
-                // Host listens for Data Channel
-                peerConnection.ondatachannel = e => {
-                    dataConn = e.channel;
-                    setupDataHandlers();
-                };
-
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                mqttClient.publish(`${roomTopic}/joiner`, JSON.stringify({ type: 'answer', sdp: peerConnection.localDescription }));
-            
-            } else if (payload.type === 'candidate' && peerConnection) {
-                peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(e=>console.log(e));
-            }
-        }
-
-        // Joiner receiving Host's Answer
-        if (!isHost && topic === `${roomTopic}/joiner`) {
-            if (payload.type === 'answer') {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-            } else if (payload.type === 'candidate' && peerConnection) {
-                peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(e=>console.log(e));
-            }
-        }
+    peer.on('open', id => {
+        document.getElementById('roomCode').innerText = id;
+        addChatMessage("sys", "Ready! Create a room or join one.");
     });
 
-    function hostRoom() {
-        isHost = true;
-        roomTopic = `dabble/room/${shortRoomId}`;
-        document.getElementById('myIdDisplay').style.display = 'block';
-        document.getElementById('roomCode').innerText = shortRoomId;
-        addChatMessage("sys", "Waiting for someone to join using your Room ID...");
-        requestNotificationPermission();
-        
-        mqttClient.subscribe(`${roomTopic}/host`);
+    peer.on('error', err => { 
+        if (err.type === 'unavailable-id') alert("Room ID collision! Please refresh.");
+        else addChatMessage("sys", `Server Error: ${err.type}`); 
+    });
+
+    // --- OPTIMIZATION 2: Apply Degradation Preference ---
+    // This tells the browser to prioritize smooth framerates over sharp images if the PC is lagging.
+    function applySenderOptimizations(peerConnection) {
+        const senders = peerConnection.getSenders();
+        senders.forEach(sender => {
+            if (sender.track && sender.track.kind === 'video') {
+                const params = sender.getParameters();
+                params.degradationPreference = 'maintain-framerate'; 
+                sender.setParameters(params).catch(e => console.error(e));
+            }
+        });
     }
 
-    async function joinRoom() {
-        isHost = false;
+    function hostRoom() {
+        document.getElementById('myIdDisplay').style.display = 'block';
+        addChatMessage("sys", "Waiting for someone to join using your Room ID...");
+        requestNotificationPermission();
+
+        peer.on('connection', conn => { dataConn = conn; setupDataHandlers(); });
+        
+        peer.on('call', call => {
+            currentCall = call;
+            call.answer(localStream);
+            
+            // Apply optimizations once connection is established
+            setTimeout(() => applySenderOptimizations(call.peerConnection), 1000);
+
+            call.on('stream', remoteStream => { document.getElementById('remoteVideo').srcObject = remoteStream; });
+        });
+    }
+
+    function joinRoom() {
         const hostId = document.getElementById('peerIdInput').value.trim();
         if(!hostId) return alert("Please enter the Room ID first!");
-        roomTopic = `dabble/room/${hostId}`;
         addChatMessage("sys", "Connecting to room...");
         requestNotificationPermission();
 
-        connectionTimeout = setTimeout(() => {
-            addChatMessage("sys", "Connection timed out. Ensure the host is still on the page and try again.");
-        }, 15000);
+        connectionTimeout = setTimeout(() => { addChatMessage("sys", "Connection timed out. Ensure the host is still on the page."); }, 10000);
 
-        mqttClient.subscribe(`${roomTopic}/joiner`);
-        setupPeerConnection();
-
-        // Joiner creates the Data Channel
-        dataConn = peerConnection.createDataChannel("chat");
+        dataConn = peer.connect(hostId);
+        dataConn.on('error', (err) => { clearTimeout(connectionTimeout); addChatMessage("sys", `Connection failed: ${err}`); });
         setupDataHandlers();
 
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        mqttClient.publish(`${roomTopic}/host`, JSON.stringify({ type: 'offer', sdp: peerConnection.localDescription }));
+        currentCall = peer.call(hostId, localStream);
+        
+        setTimeout(() => applySenderOptimizations(currentCall.peerConnection), 1000);
+
+        currentCall.on('stream', remoteStream => { document.getElementById('remoteVideo').srcObject = remoteStream; });
     }
 
-    function setupPeerConnection() {
-        peerConnection = new RTCPeerConnection({
-            iceServers: [
-                { urls: "stun:stun.l.google.com:19302" },
-                { urls: "stun:stun1.l.google.com:19302" }
-            ]
-        });
-
-        if (localStream) {
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-        }
-
-        peerConnection.ontrack = e => {
-            const remoteVid = document.getElementById('remoteVideo');
-            if (remoteVid.srcObject !== e.streams[0]) {
-                addChatMessage("sys", "Video Stream Connected!");
-                remoteVid.srcObject = e.streams[0];
-                if (remoteVid.paused) remoteVid.play().catch(err => console.log(err));
-            }
-        };
-
-        // Trickle ICE ensures connection happens in < 1 second
-        peerConnection.onicecandidate = e => {
-            if (e.candidate) {
-                const target = isHost ? 'joiner' : 'host';
-                mqttClient.publish(`${roomTopic}/${target}`, JSON.stringify({ type: 'candidate', candidate: e.candidate }));
-            }
-        };
-    }
-
-    // --- Media Controls ---
     function toggleAudio() {
         if (localStream && localStream.getAudioTracks().length > 0) {
             isAudioMuted = !isAudioMuted;
@@ -389,31 +311,39 @@
         }
     }
 
+    // --- OPTIMIZATION 3: Sane Screen Share Defaults ---
+    // Dropped from 1440p/120 to 1080p/60 with a 5Mbps cap.
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
                 screenStream = await navigator.mediaDevices.getDisplayMedia({ 
-                    video: { frameRate: { ideal: 60, max: 120 } }, 
+                    video: { width: 1920, height: 1080, frameRate: 60 }, 
                     audio: true 
                 });
-                
                 const videoTrack = screenStream.getVideoTracks()[0];
-                videoTrack.contentHint = 'detail'; 
                 
-                if (peerConnection) {
-                    const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-                    if (sender) await sender.replaceTrack(videoTrack);
+                // Add a hint to tell the browser this is high-motion content (gaming)
+                videoTrack.contentHint = 'motion';
+
+                if (currentCall && currentCall.peerConnection) {
+                    const sender = currentCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
+                    if (sender) {
+                        const params = sender.getParameters();
+                        // Cap bitrate to 5Mbps (Discord Nitro level) instead of 25Mbps
+                        if (params.encodings && params.encodings.length) params.encodings[0].maxBitrate = 5000000;
+                        await sender.setParameters(params);
+                        await sender.replaceTrack(videoTrack);
+                    }
                 }
-                
                 document.getElementById('localVideo').srcObject = screenStream;
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing";
                 document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
                 videoTrack.onended = () => { toggleScreenShare(); };
             } catch (e) { addChatMessage("sys", "Screen share canceled or error."); }
         } else {
-            if (peerConnection) {
-                const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-                if (sender && localStream.getVideoTracks().length > 0) sender.replaceTrack(localStream.getVideoTracks()[0]);
+            if (currentCall && currentCall.peerConnection) {
+                const sender = currentCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
+                if (sender) sender.replaceTrack(localStream.getVideoTracks()[0]);
             }
             document.getElementById('localVideo').srcObject = localStream;
             screenStream.getTracks().forEach(t => t.stop());
@@ -446,27 +376,21 @@
         if(btn) { btn.innerText = "🗗 Pop Out"; btn.classList.replace('btn-success', 'btn-secondary'); }
     });
 
-    // --- Native Data Channel Handling ---
     function setupDataHandlers() {
-        dataConn.binaryType = 'arraybuffer';
-        
-        dataConn.onopen = () => {
+        dataConn.on('open', () => {
             clearTimeout(connectionTimeout); 
             addChatMessage("sys", "Handshake Complete! Connection is live.");
             document.getElementById('myIdDisplay').style.display = 'none';
-        };
+        });
         
-        dataConn.onmessage = e => {
-            const data = e.data;
+        dataConn.on('data', data => {
             if (typeof data === 'string') {
                 const d = JSON.parse(data);
                 if (d.type === 'chat') {
                     addChatMessage("friend", d.text);
                     triggerNotification('Message', d.text); 
                 } else if (d.type === 'file-start') {
-                    incomingFileInfo = d;
-                    incomingFileData = [];
-                    receivedSize = 0;
+                    incomingFileInfo = d; incomingFileData = []; receivedSize = 0;
                     document.getElementById('fileTransferUI').style.display = 'block';
                     document.getElementById('fileTransferLabel').innerText = `Receiving: ${d.name}`;
                     document.getElementById('fileProgress').max = d.size;
@@ -482,12 +406,7 @@
             } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
                 incomingFileData.push(data);
                 receivedSize += data.byteLength;
-                
-                const now = Date.now();
-                if (now - lastReceiveUpdate > 50 || receivedSize >= incomingFileInfo.size) {
-                    document.getElementById('fileProgress').value = receivedSize;
-                    lastReceiveUpdate = now;
-                }
+                document.getElementById('fileProgress').value = receivedSize;
 
                 if (receivedSize >= incomingFileInfo.size) {
                     const blob = new Blob(incomingFileData);
@@ -496,12 +415,12 @@
                     resetFileTransferUI();
                 }
             }
-        };
+        });
     }
 
     function sendMessage() {
         const i = document.getElementById('chatInput');
-        if (dataConn && dataConn.readyState === 'open' && i.value.trim() !== "") {
+        if (dataConn && dataConn.open && i.value.trim() !== "") {
             dataConn.send(JSON.stringify({ type: 'chat', text: i.value }));
             addChatMessage("me", i.value);
             i.value = "";
@@ -509,7 +428,6 @@
     }
     document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
 
-    // --- Sequential File Queue & Cancel ---
     function setupDragAndDrop() {
         const chatBox = document.getElementById('chatBox');
         chatBox.addEventListener('dragover', e => { e.preventDefault(); chatBox.classList.add('dragover'); });
@@ -519,7 +437,7 @@
             e.preventDefault();
             chatBox.classList.remove('dragover');
             
-            if (!dataConn || dataConn.readyState !== 'open') return addChatMessage("sys", "Connect to a peer to send files!");
+            if (!dataConn || !dataConn.open) return addChatMessage("sys", "Connect to a peer to send files!");
 
             if (e.dataTransfer.files.length > 0) {
                 for (let i = 0; i < e.dataTransfer.files.length; i++) fileQueue.push(e.dataTransfer.files[i]);
@@ -537,10 +455,7 @@
         }
 
         let file = fileQueue.shift(); 
-        isSendingFile = true;
-        cancelTransferFlag = false;
-        
-        let lastSendUpdate = 0; 
+        isSendingFile = true; cancelTransferFlag = false;
         
         document.getElementById('fileTransferUI').style.display = 'block';
         
@@ -549,8 +464,7 @@
         document.getElementById('fileTransferLabel').innerText = labelText;
         
         const progress = document.getElementById('fileProgress');
-        progress.max = file.size;
-        progress.value = 0;
+        progress.max = file.size; progress.value = 0;
 
         dataConn.send(JSON.stringify({ type: 'file-start', name: file.name, size: file.size }));
 
@@ -559,9 +473,7 @@
         const readNextChunk = () => {
             if (cancelTransferFlag) {
                 dataConn.send(JSON.stringify({ type: 'file-cancel' }));
-                fileQueue = []; 
-                resetFileTransferUI();
-                return; 
+                fileQueue = []; resetFileTransferUI(); return; 
             }
 
             const slice = file.slice(offset, offset + CHUNK_SIZE);
@@ -570,15 +482,10 @@
             reader.onload = e => {
                 dataConn.send(e.target.result);
                 offset += e.target.result.byteLength;
-                
-                const now = Date.now();
-                if (now - lastSendUpdate > 50 || offset >= file.size) {
-                    progress.value = offset;
-                    lastSendUpdate = now;
-                }
+                progress.value = offset;
 
                 if (offset < file.size) {
-                    if(dataConn.bufferedAmount > 2000000) setTimeout(readNextChunk, 50);
+                    if(dataConn.dataChannel && dataConn.dataChannel.bufferedAmount > 2000000) setTimeout(readNextChunk, 50);
                     else readNextChunk();
                 } else {
                     addChatMessage("me", `Sent file: ${file.name}`);
@@ -592,8 +499,7 @@
 
     function cancelTransfer() {
         if (isSendingFile) {
-            cancelTransferFlag = true;
-            fileQueue = []; 
+            cancelTransferFlag = true; fileQueue = []; 
             addChatMessage("sys", "You canceled the upload and cleared the queue.");
         } else if (incomingFileInfo) {
             dataConn.send(JSON.stringify({ type: 'file-cancel-request' }));
@@ -604,11 +510,7 @@
 
     function resetFileTransferUI() {
         document.getElementById('fileTransferUI').style.display = 'none';
-        incomingFileInfo = null;
-        incomingFileData = [];
-        receivedSize = 0;
-        isSendingFile = false;
-        cancelTransferFlag = false;
+        incomingFileInfo = null; incomingFileData = []; receivedSize = 0; isSendingFile = false; cancelTransferFlag = false;
     }
 
     function addChatMessage(s, m) {
