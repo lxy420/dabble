@@ -5,7 +5,7 @@
     <title>Dabble | Ultra P2P</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        :root { --bg-main: #ff00ff; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
+        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
@@ -124,14 +124,10 @@
     let connectionTimeout;
     const shortRoomId = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // --- SERVER HARDENING ---
-    // Forcing secure connections and aggressive keep-alives
+    // Allow PeerJS to handle routing but keep STUN servers and logging
     let peer = new Peer(shortRoomId, {
-        host: '0.peerjs.com',
-        port: 443,
-        path: '/',
-        secure: true,
-        pingInterval: 5000, // Send a heartbeat every 5 seconds
+        debug: 2, 
+        pingInterval: 5000,
         config: {
             'iceServers': [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -141,9 +137,12 @@
         }
     }); 
 
-    let isAudioMuted = false, isVideoOff = false;
+    let isAudioMuted = false;
+    let isVideoOff = false;
+
     const CHUNK_SIZE = 65536; 
     let fileQueue = [], incomingFileInfo = null, incomingFileData = [], receivedSize = 0, isSendingFile = false, cancelTransferFlag = false; 
+
     let unreadCount = 0;
     const originalTitle = "Dabble | Ultra P2P";
 
@@ -163,7 +162,75 @@
         requestNotificationPermission();
     }
 
-    // --- Server Status & Auto-Reconnect ---
+    function toggleSettings() {
+        const modal = document.getElementById('settingsModal');
+        modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
+    }
+
+    async function loadDevices() {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioSelect = document.getElementById('audioSource');
+        const videoSelect = document.getElementById('videoSource');
+        audioSelect.innerHTML = ''; videoSelect.innerHTML = '';
+
+        devices.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.deviceId;
+            if (device.kind === 'audioinput') {
+                option.text = device.label || `Microphone ${audioSelect.length + 1}`;
+                audioSelect.appendChild(option);
+            } else if (device.kind === 'videoinput') {
+                option.text = device.label || `Camera ${videoSelect.length + 1}`;
+                videoSelect.appendChild(option);
+            }
+        });
+    }
+
+    async function changeDevice() {
+        const audioId = document.getElementById('audioSource').value;
+        const videoId = document.getElementById('videoSource').value;
+        
+        if (localStream) localStream.getTracks().forEach(track => track.stop());
+
+        localStream = await navigator.mediaDevices.getUserMedia({
+            audio: audioId ? { deviceId: { exact: audioId }, echoCancellation: true, noiseSuppression: true } : true,
+            video: videoId ? { deviceId: { exact: videoId }, ...cameraConstraints.video } : cameraConstraints.video
+        });
+
+        if (!screenStream) document.getElementById('localVideo').srcObject = localStream;
+
+        if (currentCall && currentCall.peerConnection) {
+            const audioSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+            const videoSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (audioSender) audioSender.replaceTrack(localStream.getAudioTracks()[0]);
+            if (videoSender && !screenStream) videoSender.replaceTrack(localStream.getVideoTracks()[0]);
+        }
+
+        isAudioMuted = false; isVideoOff = false;
+        document.getElementById('micBtn').innerText = "🎤 Mute";
+        document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
+        document.getElementById('camBtn').innerText = "📷 Cam Off";
+        document.getElementById('camBtn').classList.replace('btn-danger', 'btn-secondary');
+    }
+
+    function requestNotificationPermission() {
+        if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission();
+    }
+
+    function triggerNotification(title, body) {
+        if (document.hidden) {
+            unreadCount++;
+            document.title = `(${unreadCount}) New ${title}!`;
+            if ("Notification" in window && Notification.permission === "granted") {
+                new Notification(`Dabble: New ${title}`, { body: body, icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="%236366f1"/></svg>' });
+            }
+        }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) { unreadCount = 0; document.title = originalTitle; }
+    });
+
     peer.on('open', id => {
         document.getElementById('roomCode').innerText = id;
         addChatMessage("sys", "Ready! Create a room or join one.");
@@ -177,7 +244,6 @@
     peer.on('error', err => { 
         if (err.type === 'network') {
             addChatMessage("sys", `Network Error: Cloud server dropped. Trying to recover...`);
-            // Attempt to force a reconnection if it fully died
             if(peer.disconnected) peer.reconnect();
         } else if (err.type === 'unavailable-id') {
             alert("Room ID collision! Please refresh.");
@@ -198,7 +264,6 @@
     }
 
     function hostRoom() {
-        // Check if we are disconnected before hosting
         if (peer.disconnected) {
             addChatMessage("sys", "Reconnecting to server before hosting...");
             peer.reconnect();
@@ -238,65 +303,35 @@
         currentCall.on('stream', remoteStream => { document.getElementById('remoteVideo').srcObject = remoteStream; });
     }
 
-    // Settings & Hardware Setup
-    function toggleSettings() {
-        const modal = document.getElementById('settingsModal');
-        modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
-    }
-
-    async function loadDevices() {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioSelect = document.getElementById('audioSource');
-        const videoSelect = document.getElementById('videoSource');
-        audioSelect.innerHTML = ''; videoSelect.innerHTML = '';
-        devices.forEach(device => {
-            const option = document.createElement('option');
-            option.value = device.deviceId;
-            if (device.kind === 'audioinput') { option.text = device.label || `Microphone ${audioSelect.length + 1}`; audioSelect.appendChild(option); } 
-            else if (device.kind === 'videoinput') { option.text = device.label || `Camera ${videoSelect.length + 1}`; videoSelect.appendChild(option); }
-        });
-    }
-
-    async function changeDevice() {
-        const audioId = document.getElementById('audioSource').value;
-        const videoId = document.getElementById('videoSource').value;
-        if (localStream) localStream.getTracks().forEach(track => track.stop());
-        localStream = await navigator.mediaDevices.getUserMedia({
-            audio: audioId ? { deviceId: { exact: audioId }, echoCancellation: true, noiseSuppression: true } : true,
-            video: videoId ? { deviceId: { exact: videoId }, ...cameraConstraints.video } : cameraConstraints.video
-        });
-        if (!screenStream) document.getElementById('localVideo').srcObject = localStream;
-        if (currentCall && currentCall.peerConnection) {
-            const audioSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
-            const videoSender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-            if (audioSender) audioSender.replaceTrack(localStream.getAudioTracks()[0]);
-            if (videoSender && !screenStream) videoSender.replaceTrack(localStream.getVideoTracks()[0]);
-        }
-        isAudioMuted = false; isVideoOff = false;
-        document.getElementById('micBtn').innerText = "🎤 Mute"; document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
-        document.getElementById('camBtn').innerText = "📷 Cam Off"; document.getElementById('camBtn').classList.replace('btn-danger', 'btn-secondary');
-    }
-
     function toggleAudio() {
         if (localStream && localStream.getAudioTracks().length > 0) {
-            isAudioMuted = !isAudioMuted; localStream.getAudioTracks()[0].enabled = !isAudioMuted;
-            const btn = document.getElementById('micBtn'); btn.innerText = isAudioMuted ? "🔇 Unmute" : "🎤 Mute";
-            btn.classList.toggle('btn-danger', isAudioMuted); btn.classList.toggle('btn-secondary', !isAudioMuted);
+            isAudioMuted = !isAudioMuted;
+            localStream.getAudioTracks()[0].enabled = !isAudioMuted;
+            const btn = document.getElementById('micBtn');
+            btn.innerText = isAudioMuted ? "🔇 Unmute" : "🎤 Mute";
+            btn.classList.toggle('btn-danger', isAudioMuted);
+            btn.classList.toggle('btn-secondary', !isAudioMuted);
         }
     }
 
     function toggleVideo() {
         if (localStream && localStream.getVideoTracks().length > 0) {
-            isVideoOff = !isVideoOff; localStream.getVideoTracks()[0].enabled = !isVideoOff;
-            const btn = document.getElementById('camBtn'); btn.innerText = isVideoOff ? "🚫 Cam On" : "📷 Cam Off";
-            btn.classList.toggle('btn-danger', isVideoOff); btn.classList.toggle('btn-secondary', !isVideoOff);
+            isVideoOff = !isVideoOff;
+            localStream.getVideoTracks()[0].enabled = !isVideoOff;
+            const btn = document.getElementById('camBtn');
+            btn.innerText = isVideoOff ? "🚫 Cam On" : "📷 Cam Off";
+            btn.classList.toggle('btn-danger', isVideoOff);
+            btn.classList.toggle('btn-secondary', !isVideoOff);
         }
     }
 
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 60 }, audio: true });
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+                    video: { width: 1920, height: 1080, frameRate: 60 }, 
+                    audio: true 
+                });
                 const videoTrack = screenStream.getVideoTracks()[0];
                 videoTrack.contentHint = 'motion';
                 if (currentCall && currentCall.peerConnection) {
@@ -309,7 +344,8 @@
                     }
                 }
                 document.getElementById('localVideo').srcObject = screenStream;
-                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
+                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing";
+                document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
                 videoTrack.onended = () => { toggleScreenShare(); };
             } catch (e) { addChatMessage("sys", "Screen share canceled or error."); }
         } else {
@@ -318,19 +354,23 @@
                 if (sender) sender.replaceTrack(localStream.getVideoTracks()[0]);
             }
             document.getElementById('localVideo').srcObject = localStream;
-            screenStream.getTracks().forEach(t => t.stop()); screenStream = null;
-            document.getElementById('shareBtn').innerText = "📺 Screen Share"; document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
+            screenStream.getTracks().forEach(t => t.stop());
+            screenStream = null;
+            document.getElementById('shareBtn').innerText = "📺 Screen Share";
+            document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
             if (isVideoOff && localStream.getVideoTracks().length > 0) localStream.getVideoTracks()[0].enabled = false;
         }
     }
 
     function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
+
     async function togglePiP(id) {
         const video = document.getElementById(id);
         if (document.pictureInPictureElement) await document.exitPictureInPicture();
         else {
-            if (document.pictureInPictureEnabled) { try { await video.requestPictureInPicture(); } catch (err) { addChatMessage("sys", "Pop-out failed."); } } 
-            else addChatMessage("sys", "Pop-out not supported.");
+            if (document.pictureInPictureEnabled) {
+                try { await video.requestPictureInPicture(); } catch (err) { addChatMessage("sys", "Pop-out failed."); }
+            } else addChatMessage("sys", "Pop-out not supported.");
         }
     }
 
@@ -338,19 +378,11 @@
         const btn = document.getElementById('pipBtn');
         if(btn) { btn.innerText = "🗗 Bring Back"; btn.classList.replace('btn-secondary', 'btn-success'); }
     });
+    
     document.getElementById('remoteVideo').addEventListener('leavepictureinpicture', () => {
         const btn = document.getElementById('pipBtn');
         if(btn) { btn.innerText = "🗗 Pop Out"; btn.classList.replace('btn-success', 'btn-secondary'); }
     });
-
-    function requestNotificationPermission() { if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission(); }
-    function triggerNotification(title, body) {
-        if (document.hidden) {
-            unreadCount++; document.title = `(${unreadCount}) New ${title}!`;
-            if ("Notification" in window && Notification.permission === "granted") new Notification(`Dabble: New ${title}`, { body: body, icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="%236366f1"/></svg>' });
-        }
-    }
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { unreadCount = 0; document.title = originalTitle; } });
 
     function setupDataHandlers() {
         dataConn.on('open', () => {
@@ -358,22 +390,37 @@
             addChatMessage("sys", "Handshake Complete! Connection is live.");
             document.getElementById('myIdDisplay').style.display = 'none';
         });
+        
         dataConn.on('data', data => {
             if (typeof data === 'string') {
                 const d = JSON.parse(data);
-                if (d.type === 'chat') { addChatMessage("friend", d.text); triggerNotification('Message', d.text); } 
-                else if (d.type === 'file-start') {
-                    incomingFileInfo = d; incomingFileData = []; receivedSize = 0;
+                if (d.type === 'chat') {
+                    addChatMessage("friend", d.text);
+                    triggerNotification('Message', d.text); 
+                } else if (d.type === 'file-start') {
+                    incomingFileInfo = d;
+                    incomingFileData = [];
+                    receivedSize = 0;
                     document.getElementById('fileTransferUI').style.display = 'block';
                     document.getElementById('fileTransferLabel').innerText = `Receiving: ${d.name}`;
-                    document.getElementById('fileProgress').max = d.size; document.getElementById('fileProgress').value = 0;
+                    document.getElementById('fileProgress').max = d.size;
+                    document.getElementById('fileProgress').value = 0;
                     triggerNotification('File Transfer', `Receiving ${d.name}`); 
-                } else if (d.type === 'file-cancel') { addChatMessage("sys", "The sender canceled the file transfer."); resetFileTransferUI(); } 
-                else if (d.type === 'file-cancel-request') { cancelTransferFlag = true; addChatMessage("sys", "The recipient canceled the download."); }
+                } else if (d.type === 'file-cancel') {
+                    addChatMessage("sys", "The sender canceled the file transfer.");
+                    resetFileTransferUI();
+                } else if (d.type === 'file-cancel-request') {
+                    cancelTransferFlag = true;
+                    addChatMessage("sys", "The recipient canceled the download.");
+                }
             } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
-                incomingFileData.push(data); receivedSize += data.byteLength; document.getElementById('fileProgress').value = receivedSize;
+                incomingFileData.push(data);
+                receivedSize += data.byteLength;
+                document.getElementById('fileProgress').value = receivedSize;
+
                 if (receivedSize >= incomingFileInfo.size) {
-                    const blob = new Blob(incomingFileData); const url = URL.createObjectURL(blob);
+                    const blob = new Blob(incomingFileData);
+                    const url = URL.createObjectURL(blob);
                     addChatMessage("friend", `📁 <a href="${url}" download="${incomingFileInfo.name}">Download ${incomingFileInfo.name}</a>`);
                     resetFileTransferUI();
                 }
@@ -384,7 +431,9 @@
     function sendMessage() {
         const i = document.getElementById('chatInput');
         if (dataConn && dataConn.open && i.value.trim() !== "") {
-            dataConn.send(JSON.stringify({ type: 'chat', text: i.value })); addChatMessage("me", i.value); i.value = "";
+            dataConn.send(JSON.stringify({ type: 'chat', text: i.value }));
+            addChatMessage("me", i.value);
+            i.value = "";
         }
     }
     document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
@@ -393,9 +442,13 @@
         const chatBox = document.getElementById('chatBox');
         chatBox.addEventListener('dragover', e => { e.preventDefault(); chatBox.classList.add('dragover'); });
         chatBox.addEventListener('dragleave', e => { e.preventDefault(); chatBox.classList.remove('dragover'); });
+
         chatBox.addEventListener('drop', e => {
-            e.preventDefault(); chatBox.classList.remove('dragover');
+            e.preventDefault();
+            chatBox.classList.remove('dragover');
+            
             if (!dataConn || !dataConn.open) return addChatMessage("sys", "Connect to a peer to send files!");
+
             if (e.dataTransfer.files.length > 0) {
                 for (let i = 0; i < e.dataTransfer.files.length; i++) fileQueue.push(e.dataTransfer.files[i]);
                 if (e.dataTransfer.files.length > 1) addChatMessage("sys", `Queued ${e.dataTransfer.files.length} files.`);
@@ -406,33 +459,84 @@
 
     function processFileQueue() {
         if (fileQueue.length === 0) {
-            isSendingFile = false; setTimeout(() => { if(!isSendingFile) document.getElementById('fileTransferUI').style.display = 'none'; }, 1000); return;
+            isSendingFile = false;
+            setTimeout(() => { if(!isSendingFile) document.getElementById('fileTransferUI').style.display = 'none'; }, 1000);
+            return;
         }
-        let file = fileQueue.shift(); isSendingFile = true; cancelTransferFlag = false;
+
+        let file = fileQueue.shift(); 
+        isSendingFile = true;
+        cancelTransferFlag = false;
+        
         document.getElementById('fileTransferUI').style.display = 'block';
-        let labelText = `Sending: ${file.name}`; if (fileQueue.length > 0) labelText += ` (+${fileQueue.length} in queue)`;
+        
+        let labelText = `Sending: ${file.name}`;
+        if (fileQueue.length > 0) labelText += ` (+${fileQueue.length} in queue)`;
         document.getElementById('fileTransferLabel').innerText = labelText;
-        const progress = document.getElementById('fileProgress'); progress.max = file.size; progress.value = 0;
+        
+        const progress = document.getElementById('fileProgress');
+        progress.max = file.size;
+        progress.value = 0;
+
         dataConn.send(JSON.stringify({ type: 'file-start', name: file.name, size: file.size }));
+
         let offset = 0;
+        
         const readNextChunk = () => {
-            if (cancelTransferFlag) { dataConn.send(JSON.stringify({ type: 'file-cancel' })); fileQueue = []; resetFileTransferUI(); return; }
-            const slice = file.slice(offset, offset + CHUNK_SIZE); const reader = new FileReader();
+            if (cancelTransferFlag) {
+                dataConn.send(JSON.stringify({ type: 'file-cancel' }));
+                fileQueue = []; 
+                resetFileTransferUI();
+                return; 
+            }
+
+            const slice = file.slice(offset, offset + CHUNK_SIZE);
+            const reader = new FileReader();
+            
             reader.onload = e => {
-                dataConn.send(e.target.result); offset += e.target.result.byteLength; progress.value = offset;
-                if (offset < file.size) { if(dataConn.dataChannel && dataConn.dataChannel.bufferedAmount > 2000000) setTimeout(readNextChunk, 50); else readNextChunk(); } 
-                else { addChatMessage("me", `Sent file: ${file.name}`); processFileQueue(); }
-            }; reader.readAsArrayBuffer(slice);
-        }; readNextChunk();
+                dataConn.send(e.target.result);
+                offset += e.target.result.byteLength;
+                progress.value = offset;
+
+                if (offset < file.size) {
+                    if(dataConn.dataChannel && dataConn.dataChannel.bufferedAmount > 2000000) setTimeout(readNextChunk, 50);
+                    else readNextChunk();
+                } else {
+                    addChatMessage("me", `Sent file: ${file.name}`);
+                    processFileQueue(); 
+                }
+            };
+            reader.readAsArrayBuffer(slice);
+        };
+        readNextChunk();
     }
 
     function cancelTransfer() {
-        if (isSendingFile) { cancelTransferFlag = true; fileQueue = []; addChatMessage("sys", "You canceled the upload and cleared the queue."); } 
-        else if (incomingFileInfo) { dataConn.send(JSON.stringify({ type: 'file-cancel-request' })); addChatMessage("sys", "You canceled the download."); resetFileTransferUI(); }
+        if (isSendingFile) {
+            cancelTransferFlag = true;
+            fileQueue = []; 
+            addChatMessage("sys", "You canceled the upload and cleared the queue.");
+        } else if (incomingFileInfo) {
+            dataConn.send(JSON.stringify({ type: 'file-cancel-request' }));
+            addChatMessage("sys", "You canceled the download.");
+            resetFileTransferUI();
+        }
     }
 
-    function resetFileTransferUI() { document.getElementById('fileTransferUI').style.display = 'none'; incomingFileInfo = null; incomingFileData = []; receivedSize = 0; isSendingFile = false; cancelTransferFlag = false; }
-    function addChatMessage(s, m) { const b = document.getElementById('chatBox'); b.innerHTML += `<div class="msg ${s}">${m}</div>`; b.scrollTop = b.scrollHeight; }
+    function resetFileTransferUI() {
+        document.getElementById('fileTransferUI').style.display = 'none';
+        incomingFileInfo = null;
+        incomingFileData = [];
+        receivedSize = 0;
+        isSendingFile = false;
+        cancelTransferFlag = false;
+    }
+
+    function addChatMessage(s, m) {
+        const b = document.getElementById('chatBox');
+        b.innerHTML += `<div class="msg ${s}">${m}</div>`;
+        b.scrollTop = b.scrollHeight;
+    }
 
     initMedia();
 </script>
