@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Dabble | Ultra P2P</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
@@ -13,25 +14,10 @@
         video { width: 100%; aspect-ratio: 16/9; display: block; object-fit: cover; }
         .panel { background: var(--bg-card); padding: 24px; border-radius: 20px; border: 1px solid #2d3139; position: relative; }
         
-        /* Loading Indicator */
-        #loader { 
-            display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0; 
-            background: rgba(26, 29, 33, 0.9); z-index: 10; border-radius: 20px;
-            flex-direction: column; align-items: center; justify-content: center;
-            backdrop-filter: blur(4px);
-        }
-        .spinner { 
-            width: 40px; height: 40px; border: 4px solid rgba(99, 102, 241, 0.2); 
-            border-top: 4px solid var(--accent); border-radius: 50%; 
-            animation: spin 1s linear infinite; margin-bottom: 10px;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .pulse { animation: pulse-text 1.5s ease-in-out infinite; color: var(--accent); font-weight: bold; font-size: 14px; }
-        @keyframes pulse-text { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-
         /* UI Elements */
-        textarea { width: 100%; height: 100px; background: #0b0d0f; color: var(--accent); border: 1px solid #2d3139; border-radius: 12px; padding: 12px; font-family: monospace; font-size: 10px; margin-top: 15px; resize: none; outline: none; }
-        button { padding: 12px 20px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 12px; font-weight: 600; margin-top: 5px; transition: 0.2s; }
+        input { width: 100%; padding: 12px; background: #0b0d0f; border: 1px solid #2d3139; border-radius: 10px; color: white; outline: none; box-sizing: border-box; font-family: monospace; font-size: 14px; text-align: center; margin-bottom: 10px;}
+        input:focus { border-color: var(--accent); }
+        button { padding: 12px 20px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 12px; font-weight: 600; transition: 0.2s; width: 100%; }
         button:hover { opacity: 0.9; }
         .btn-secondary { background: #2d3139; border: 1px solid #3f444e; }
         .btn-success { background: var(--success); }
@@ -45,7 +31,7 @@
         .msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; font-size: 14px; word-wrap: break-word; }
         .msg.me { background: var(--accent); align-self: flex-end; }
         .msg.friend { background: #2d3139; align-self: flex-start; }
-        .msg.sys { font-size: 11px; color: #9ca3af; align-self: center; text-transform: uppercase; }
+        .msg.sys { font-size: 11px; color: #9ca3af; align-self: center; text-transform: uppercase; text-align: center; }
         .msg a { color: #818cf8; text-decoration: none; font-weight: bold; }
         .msg a:hover { text-decoration: underline; }
         
@@ -57,6 +43,7 @@
         progress::-webkit-progress-value { background-color: var(--accent); border-radius: 4px; }
         
         .video-overlay { position: absolute; bottom: 10px; left: 10px; z-index: 5; }
+        #myIdDisplay { margin-top: 15px; font-size: 14px; color: #9ca3af; text-align: center; word-break: break-all; background: #0b0d0f; padding: 10px; border-radius: 8px; display: none; border: 1px dashed var(--accent); }
     </style>
 </head>
 <body>
@@ -66,35 +53,29 @@
         <div class="video-card">
             <video id="localVideo" autoplay playsinline muted></video>
             <div class="video-overlay">
-                <button class="btn-secondary" onclick="toggleScreenShare()" id="shareBtn">📺 High-FPS Share</button>
+                <button class="btn-secondary" style="width:auto;" onclick="toggleScreenShare()" id="shareBtn">📺 High-FPS Share</button>
             </div>
         </div>
         <div class="video-card">
             <video id="remoteVideo" autoplay playsinline></video>
             <div class="video-overlay">
-                <button class="btn-secondary" onclick="goFullscreen('remoteVideo')">⛶ Fullscreen</button>
+                <button class="btn-secondary" style="width:auto;" onclick="goFullscreen('remoteVideo')">⛶ Fullscreen</button>
             </div>
         </div>
     </div>
 
     <div class="sidebar">
         <div class="panel">
-            <div id="loader">
-                <div class="spinner"></div>
-                <div class="pulse">GENERATING CODE...</div>
+            <input type="text" id="peerIdInput" placeholder="Paste a Room ID here to join...">
+            
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <button onclick="hostRoom()">1. Create Room</button>
+                <button class="btn-secondary" onclick="joinRoom()">2. Join Room</button>
             </div>
 
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <button onclick="createOffer()">1. Host</button>
-                <button class="btn-secondary" onclick="createAnswer()">2. Join</button>
-            </div>
-            <button class="btn-success" style="width:100%; margin-top:10px;" onclick="acceptAnswer()">3. Finalize Handshake</button>
-            
-            <textarea id="sdpData" placeholder="Code will appear here after clicking Host or Join..."></textarea>
-            
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px;">
-                <button class="btn-secondary" onclick="copyCode()">📋 Copy</button>
-                <button class="btn-secondary" onclick="pasteCode()">📥 Paste</button>
+            <div id="myIdDisplay">
+                Your Room ID:<br>
+                <strong id="roomCode" style="font-size:18px; color:white; display:block; margin-top:5px; user-select:all;">Loading...</strong>
             </div>
         </div>
 
@@ -103,24 +84,24 @@
                 <div id="fileTransferLabel">Transferring...</div>
                 <progress id="fileProgress" value="0" max="100"></progress>
             </div>
-            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Drop files here to send.</div></div>
-            <input type="text" id="chatInput" placeholder="Type a message..." style="width:100%; padding:12px; background:#0b0d0f; border:1px solid #2d3139; border-radius:10px; color:white; outline:none; box-sizing:border-box;">
+            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Connecting to server...</div></div>
+            <input type="text" id="chatInput" placeholder="Type a message..." style="margin-bottom:0; text-align:left; font-family:inherit;">
         </div>
     </div>
 </div>
 
 <script>
-    let localStream = new MediaStream(), peerConnection, dataChannel, screenStream;
-    const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-    
+    let localStream = new MediaStream(), currentCall, dataConn, screenStream;
+    let peer = new Peer(); // Initialize PeerJS cloud connection
+
     // File Transfer Variables
-    const CHUNK_SIZE = 65536; // 64KB chunks for speed
+    const CHUNK_SIZE = 65536; 
     let incomingFileInfo = null;
     let incomingFileData = [];
     let receivedSize = 0;
     let isSendingFile = false;
 
-    async function init() {
+    async function initMedia() {
         try {
             localStream = await navigator.mediaDevices.getUserMedia({ 
                 video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } }, 
@@ -128,32 +109,56 @@
             });
             document.getElementById('localVideo').srcObject = localStream;
         } catch (e) { addChatMessage("sys", "Camera/Mic blocked."); }
-        
         setupDragAndDrop();
     }
 
-    function showLoader(show) {
-        document.getElementById('loader').style.display = show ? 'flex' : 'none';
+    // --- PeerJS Signaling Events ---
+    peer.on('open', id => {
+        document.getElementById('roomCode').innerText = id;
+        addChatMessage("sys", "Ready! Create a room or join one.");
+    });
+
+    peer.on('error', err => {
+        addChatMessage("sys", `Connection Error: ${err.type}`);
+    });
+
+    // --- Host Logic ---
+    function hostRoom() {
+        document.getElementById('myIdDisplay').style.display = 'block';
+        addChatMessage("sys", "Waiting for someone to join using your Room ID...");
+
+        // Listen for incoming Data Connections
+        peer.on('connection', conn => {
+            dataConn = conn;
+            setupDataHandlers();
+        });
+
+        // Listen for incoming Media Calls
+        peer.on('call', call => {
+            currentCall = call;
+            call.answer(localStream); // Send our video back
+            call.on('stream', remoteStream => {
+                document.getElementById('remoteVideo').srcObject = remoteStream;
+            });
+        });
     }
 
-    function setupPeerConnection() {
-        peerConnection = new RTCPeerConnection(config);
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-        
-        peerConnection.ontrack = e => document.getElementById('remoteVideo').srcObject = e.streams[0];
-        
-        peerConnection.onicecandidate = e => {
-            if (e.candidate === null) {
-                document.getElementById('sdpData').value = JSON.stringify(peerConnection.localDescription);
-                showLoader(false); 
-                addChatMessage("sys", "Code Ready!");
-            }
-        };
+    // --- Join Logic ---
+    function joinRoom() {
+        const hostId = document.getElementById('peerIdInput').value.trim();
+        if(!hostId) return alert("Please enter the Host's Room ID first!");
 
-        peerConnection.ondatachannel = e => { 
-            dataChannel = e.channel; 
-            setupDataHandlers(); 
-        };
+        addChatMessage("sys", "Connecting to room...");
+
+        // Connect Data
+        dataConn = peer.connect(hostId);
+        setupDataHandlers();
+
+        // Connect Media
+        currentCall = peer.call(hostId, localStream);
+        currentCall.on('stream', remoteStream => {
+            document.getElementById('remoteVideo').srcObject = remoteStream;
+        });
     }
 
     // --- Media Controls ---
@@ -163,8 +168,8 @@
                 screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 2560, height: 1440, frameRate: 120 }, audio: true });
                 const videoTrack = screenStream.getVideoTracks()[0];
                 
-                if (peerConnection) {
-                    const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+                if (currentCall && currentCall.peerConnection) {
+                    const sender = currentCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
                     if (sender) {
                         const params = sender.getParameters();
                         if (params.encodings && params.encodings.length) params.encodings[0].maxBitrate = 25000000;
@@ -177,10 +182,10 @@
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing";
                 document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
                 videoTrack.onended = () => { toggleScreenShare(); };
-            } catch (e) { addChatMessage("sys", "Screen share error: " + e.message); }
+            } catch (e) { addChatMessage("sys", "Screen share error."); }
         } else {
-            if (peerConnection) {
-                const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+            if (currentCall && currentCall.peerConnection) {
+                const sender = currentCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
                 if (sender) sender.replaceTrack(localStream.getVideoTracks()[0]);
             }
             document.getElementById('localVideo').srcObject = localStream;
@@ -194,81 +199,49 @@
 
     function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
 
-    // --- WebRTC Handshake ---
-    async function createOffer() {
-        showLoader(true);
-        setupPeerConnection();
-        dataChannel = peerConnection.createDataChannel("chat");
-        setupDataHandlers();
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-    }
-
-    async function createAnswer() {
-        const val = document.getElementById('sdpData').value;
-        if (!val) return alert("Paste Host code first!");
-        showLoader(true);
-        setupPeerConnection();
-        try {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(val)));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-        } catch(e) { showLoader(false); alert("Invalid Code!"); }
-    }
-
-    async function acceptAnswer() {
-        const val = document.getElementById('sdpData').value;
-        if (!val) return alert("Paste Joiner code first!");
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(val)));
-        addChatMessage("sys", "Handshake Complete!");
-    }
-
     // --- Data Channel & Messaging ---
     function setupDataHandlers() {
-        dataChannel.binaryType = 'arraybuffer'; // Crucial for file transfers
-        dataChannel.bufferedAmountLowThreshold = CHUNK_SIZE * 2; // Buffer management
-
-        dataChannel.onopen = () => addChatMessage("sys", "Data Live! You can now chat and drag-drop files.");
+        dataConn.on('open', () => {
+            addChatMessage("sys", "Handshake Complete! Connection is live.");
+            document.getElementById('myIdDisplay').style.display = 'none'; // Hide code once connected
+        });
         
-        dataChannel.onmessage = e => {
-            if (typeof e.data === 'string') {
-                const d = JSON.parse(e.data);
+        dataConn.on('data', data => {
+            if (typeof data === 'string') {
+                const d = JSON.parse(data);
                 if (d.type === 'chat') {
                     addChatMessage("friend", d.text);
                 } else if (d.type === 'file-start') {
-                    // Prepare to receive a file
                     incomingFileInfo = d;
                     incomingFileData = [];
                     receivedSize = 0;
-                    
                     document.getElementById('fileTransferUI').style.display = 'block';
                     document.getElementById('fileTransferLabel').innerText = `Receiving: ${d.name}`;
                     document.getElementById('fileProgress').max = d.size;
                     document.getElementById('fileProgress').value = 0;
                 }
-            } else {
-                // Receiving binary file chunks
-                incomingFileData.push(e.data);
-                receivedSize += e.data.byteLength;
+            } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+                // Receiving binary chunks
+                incomingFileData.push(data);
+                receivedSize += data.byteLength;
                 document.getElementById('fileProgress').value = receivedSize;
 
                 if (receivedSize >= incomingFileInfo.size) {
                     const blob = new Blob(incomingFileData);
                     const url = URL.createObjectURL(blob);
                     addChatMessage("friend", `📁 <a href="${url}" download="${incomingFileInfo.name}">Download ${incomingFileInfo.name}</a>`);
-                    
                     document.getElementById('fileTransferUI').style.display = 'none';
                     incomingFileInfo = null;
                     incomingFileData = [];
                 }
             }
-        };
+        });
     }
 
     function sendMessage() {
         const i = document.getElementById('chatInput');
-        if (dataChannel?.readyState === "open" && i.value.trim() !== "") {
-            dataChannel.send(JSON.stringify({ type: 'chat', text: i.value }));
+        if (dataConn && dataConn.open && i.value.trim() !== "") {
+            dataConn.send(JSON.stringify({ type: 'chat', text: i.value }));
             addChatMessage("me", i.value);
             i.value = "";
         }
@@ -279,49 +252,29 @@
     function setupDragAndDrop() {
         const chatBox = document.getElementById('chatBox');
         
-        chatBox.addEventListener('dragover', e => {
-            e.preventDefault();
-            chatBox.classList.add('dragover');
-        });
-
-        chatBox.addEventListener('dragleave', e => {
-            e.preventDefault();
-            chatBox.classList.remove('dragover');
-        });
+        chatBox.addEventListener('dragover', e => { e.preventDefault(); chatBox.classList.add('dragover'); });
+        chatBox.addEventListener('dragleave', e => { e.preventDefault(); chatBox.classList.remove('dragover'); });
 
         chatBox.addEventListener('drop', e => {
             e.preventDefault();
             chatBox.classList.remove('dragover');
             
-            if (!dataChannel || dataChannel.readyState !== 'open') {
-                return addChatMessage("sys", "Connect to a peer to send files!");
-            }
-            if (isSendingFile) {
-                return addChatMessage("sys", "Already sending a file. Please wait.");
-            }
+            if (!dataConn || !dataConn.open) return addChatMessage("sys", "Connect to a peer to send files!");
+            if (isSendingFile) return addChatMessage("sys", "Already sending a file. Please wait.");
 
-            if (e.dataTransfer.files.length > 0) {
-                sendFile(e.dataTransfer.files[0]);
-            }
+            if (e.dataTransfer.files.length > 0) sendFile(e.dataTransfer.files[0]);
         });
     }
 
     function sendFile(file) {
         isSendingFile = true;
-        
-        // Setup UI
         document.getElementById('fileTransferUI').style.display = 'block';
         document.getElementById('fileTransferLabel').innerText = `Sending: ${file.name}`;
         const progress = document.getElementById('fileProgress');
         progress.max = file.size;
         progress.value = 0;
 
-        // Tell receiver a file is coming
-        dataChannel.send(JSON.stringify({ 
-            type: 'file-start', 
-            name: file.name, 
-            size: file.size 
-        }));
+        dataConn.send(JSON.stringify({ type: 'file-start', name: file.name, size: file.size }));
 
         let offset = 0;
         
@@ -330,49 +283,35 @@
             const reader = new FileReader();
             
             reader.onload = e => {
-                // Buffer Management (Backpressure)
-                // If the channel is getting clogged, wait for it to clear
-                if (dataChannel.bufferedAmount > dataChannel.bufferedAmountLowThreshold) {
-                    dataChannel.onbufferedamountlow = () => {
-                        dataChannel.onbufferedamountlow = null;
-                        sendChunk(e.target.result);
-                    };
+                dataConn.send(e.target.result);
+                offset += e.target.result.byteLength;
+                progress.value = offset;
+
+                if (offset < file.size) {
+                    // Small delay to prevent crashing the browser's network buffer on massive files
+                    if(dataConn.dataChannel && dataConn.dataChannel.bufferedAmount > 2000000) {
+                        setTimeout(readNextChunk, 50);
+                    } else {
+                        readNextChunk();
+                    }
                 } else {
-                    sendChunk(e.target.result);
+                    addChatMessage("me", `Sent file: ${file.name}`);
+                    setTimeout(() => { document.getElementById('fileTransferUI').style.display = 'none'; }, 1000);
+                    isSendingFile = false;
                 }
             };
             reader.readAsArrayBuffer(slice);
         };
-
-        const sendChunk = data => {
-            dataChannel.send(data);
-            offset += data.byteLength;
-            progress.value = offset;
-
-            if (offset < file.size) {
-                readNextChunk(); // Keep reading
-            } else {
-                // Done sending
-                addChatMessage("me", `Sent file: ${file.name}`);
-                setTimeout(() => { document.getElementById('fileTransferUI').style.display = 'none'; }, 1000);
-                isSendingFile = false;
-            }
-        };
-
-        // Start the process
         readNextChunk();
     }
 
-    // --- Utilities ---
-    function copyCode() { document.getElementById('sdpData').select(); document.execCommand('copy'); addChatMessage("sys", "Copied!"); }
-    async function pasteCode() { document.getElementById('sdpData').value = await navigator.clipboard.readText(); addChatMessage("sys", "Pasted!"); }
     function addChatMessage(s, m) {
         const b = document.getElementById('chatBox');
         b.innerHTML += `<div class="msg ${s}">${m}</div>`;
         b.scrollTop = b.scrollHeight;
     }
 
-    init();
+    initMedia();
 </script>
 </body>
 </html>
