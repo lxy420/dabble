@@ -1,360 +1,195 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <title>Dabble | Ultra P2P</title>
     <style>
-        :root {
-            --bg-main: #0f1113;
-            --bg-card: #1a1d21;
-            --accent: #6366f1;
-            --text-main: #f3f4f6;
-            --danger: #ef4444;
-        }
-
-        body {
-            font-family: 'Inter', sans-serif;
-            background: var(--bg-main);
-            color: var(--text-main);
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-
-        .app-container {
-            max-width: 1200px;
-            width: 100%;
-            display: grid;
-            grid-template-columns: 1fr 380px;
-            gap: 24px;
-        }
-
-        .header {
-            grid-column: 1 / -1;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 20px;
-        }
-
-        .logo-icon {
-            width: 36px;
-            height: 36px;
-            background: var(--accent);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-        }
-
-        .video-card {
-            position: relative;
-            background: #000;
-            border-radius: 20px;
-            overflow: hidden;
-            border: 1px solid #2d3139;
-            margin-bottom: 20px;
-        }
-
-        video {
-            width: 100%;
-            aspect-ratio: 16/9;
-            display: block;
-            object-fit: cover;
-            background: #000;
-        }
-
-        .panel {
-            background: var(--bg-card);
-            padding: 24px;
-            border-radius: 20px;
-            border: 1px solid #2d3139;
-        }
-
-        #chatBox {
-            height: 300px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            padding: 10px;
-        }
-
-        .msg {
-            padding: 10px 14px;
-            border-radius: 14px;
-            max-width: 85%;
-        }
-
-        .msg.me {
-            background: var(--accent);
-            align-self: flex-end;
-        }
-
-        .msg.friend {
-            background: #2d3139;
-            align-self: flex-start;
-        }
-
-        .msg.sys {
-            font-size: 11px;
-            color: #9ca3af;
-            align-self: center;
-            text-transform: uppercase;
-        }
-
-        textarea {
-            width: 100%;
-            height: 100px;
-            background: #0b0d0f;
-            color: var(--accent);
-            border: 1px solid #2d3139;
-            border-radius: 12px;
-            padding: 12px;
-            font-family: monospace;
-            margin-top: 15px;
-            resize: none;
-            font-size: 10px;
-        }
-
-        button {
-            padding: 12px 20px;
-            cursor: pointer;
-            background: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-weight: 600;
-            margin-top: 5px;
-        }
-
-        button:disabled {
-            background: #4b5563;
-            cursor: not-allowed;
-            opacity: 0.5;
-        }
-
-        .btn-secondary {
-            background: #2d3139;
-            border: 1px solid #3f444e;
-        }
-
-        #fileTransferUI {
-            display: none;
-            padding: 10px;
-            background: #000;
-            border-radius: 10px;
-            margin-bottom: 10px;
-        }
-
-        progress {
-            width: 100%;
-            accent-color: var(--accent);
-        }
+        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --danger: #ef4444; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
+        .header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+        .logo-icon { width: 36px; height: 36px; background: var(--accent); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 800; }
+        .video-card { position: relative; background: #000; border-radius: 20px; overflow: hidden; border: 1px solid #2d3139; margin-bottom: 20px; min-height: 200px; }
+        video { width: 100%; aspect-ratio: 16/9; display: block; object-fit: cover; background: #000; }
+        .panel { background: var(--bg-card); padding: 24px; border-radius: 20px; border: 1px solid #2d3139; }
+        #chatBox { height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+        .msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; }
+        .msg.me { background: var(--accent); align-self: flex-end; }
+        .msg.friend { background: #2d3139; align-self: flex-start; }
+        .msg.sys { font-size: 11px; color: #9ca3af; align-self: center; text-transform: uppercase; }
+        textarea { width: 100%; height: 100px; background: #0b0d0f; color: var(--accent); border: 1px solid #2d3139; border-radius: 12px; padding: 12px; font-family: monospace; margin-top: 15px; resize: none; font-size: 10px; outline: none; }
+        button { padding: 12px 20px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 12px; font-weight: 600; margin-top: 5px; transition: 0.2s; }
+        button:hover { filter: brightness(1.2); }
+        .btn-secondary { background: #2d3139; border: 1px solid #3f444e; }
+        .btn-success { background: #10b981; }
     </style>
 </head>
-
 <body>
 
-    <div class="header">
-        <div style="display:flex; align-items:center; gap:12px;">
-            <div class="logo-icon">D</div>
-            <h1>Dabble</h1>
-        </div>
-        <div id="connectionStatus" style="font-size:12px; color:#9ca3af;">Checking Media...</div>
-    </div>
+<div class="header">
+    <div style="display:flex; align-items:center; gap:12px;"><div class="logo-icon">D</div><h1>Dabble</h1></div>
+    <div id="connectionStatus" style="font-size:12px; color:#9ca3af;">System Ready</div>
+</div>
 
-    <div class="app-container">
-        <div class="video-wall">
-            <div class="video-card">
-                <video id="localVideo" autoplay playsinline muted></video>
-                <div style="position:absolute; bottom:10px; left:10px;">
-                    <button class="btn-secondary" onclick="toggleScreenShare()" id="shareBtn">📺 High-FPS Share</button>
-                </div>
-            </div>
-            <div class="video-card">
-                <video id="remoteVideo" autoplay playsinline></video>
-                <div style="position:absolute; bottom:10px; left:10px;">
-                    <button class="btn-secondary" onclick="goFullscreen('remoteVideo')">⛶</button>
-                </div>
+<div class="app-container">
+    <div class="video-wall">
+        <div class="video-card">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div style="position:absolute; bottom:10px; left:10px;">
+                <button class="btn-secondary" onclick="toggleScreenShare()" id="shareBtn">📺 High-FPS Share</button>
             </div>
         </div>
-
-        <div class="sidebar">
-            <div class="panel">
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    <button id="hostBtn" onclick="createOffer()" disabled>Host</button>
-                    <button id="joinBtn" class="btn-secondary" onclick="createAnswer()" disabled>Join</button>
-                </div>
-                <button id="confBtn" class="btn-secondary" style="width:100%; margin-top:10px;" onclick="acceptAnswer()"
-                    disabled>Confirm</button>
-                <textarea id="sdpData" placeholder="Handshake Code..."></textarea>
-            </div>
-
-            <div class="panel" style="margin-top:20px;">
-                <div id="fileTransferUI">
-                    <progress id="fileProgress" value="0" max="100"></progress>
-                    <button class="btn-secondary" style="width:100%; font-size:10px;"
-                        onclick="isCancelling=true">Cancel</button>
-                </div>
-                <div id="chatBox">
-                    <div class="msg sys">Waiting for Media Access...</div>
-                </div>
-                <input type="text" id="chatInput" placeholder="Message..."
-                    style="width:100%; padding:12px; background:#0b0d0f; border:1px solid #2d3139; border-radius:10px; color:white;">
-                <div style="display:flex; gap:10px; margin-top:10px;">
-                    <button class="btn-secondary" onclick="document.getElementById('fileInput').click()">📎</button>
-                    <input type="file" id="fileInput" style="display:none;" onchange="handleFileSelect(this)">
-                    <button style="flex:1" onclick="sendMessage()">Send</button>
-                </div>
+        <div class="video-card">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div style="position:absolute; bottom:10px; left:10px;">
+                <button class="btn-secondary" onclick="goFullscreen('remoteVideo')">⛶ Fullscreen</button>
             </div>
         </div>
     </div>
 
-    <script>
-        let localStream, peerConnection, dataChannel, screenStream;
-        let receivedChunks = [], isCancelling = false;
-        const CHUNK_SIZE = 16384;
-        const BUFFER_THRESHOLD = 65536;
-        const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+    <div class="sidebar">
+        <div class="panel">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <button onclick="createOffer()">1. Host</button>
+                <button class="btn-secondary" onclick="createAnswer()">2. Join</button>
+            </div>
+            <button class="btn-success" style="width:100%; margin-top:10px;" onclick="acceptAnswer()">3. Finalize (Host only)</button>
+            
+            <textarea id="sdpData" placeholder="Code will appear here..."></textarea>
+            
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px;">
+                <button class="btn-secondary" style="font-size: 11px;" onclick="copyCode()">📋 Copy</button>
+                <button class="btn-secondary" style="font-size: 11px;" onclick="pasteCode()">📥 Paste</button>
+            </div>
+        </div>
 
-        // Initialize with better error handling
-        async function init() {
-            try {
-                localStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
-                    audio: true
-                });
-                document.getElementById('localVideo').srcObject = localStream;
+        <div class="panel" style="margin-top:20px;">
+            <div id="chatBox"><div class="msg sys">Welcome to Dabble</div></div>
+            <input type="text" id="chatInput" placeholder="Message..." style="width:100%; padding:12px; background:#0b0d0f; border:1px solid #2d3139; border-radius:10px; color:white;">
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button class="btn-secondary" onclick="document.getElementById('fileInput').click()">📎</button>
+                <input type="file" id="fileInput" style="display:none;" onchange="handleFileSelect(this)">
+                <button style="flex:1" onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+</div>
 
-                // Enable buttons only after stream is ready
-                document.getElementById('hostBtn').disabled = false;
-                document.getElementById('joinBtn').disabled = false;
-                document.getElementById('confBtn').disabled = false;
-                document.getElementById('connectionStatus').innerText = "Ready to Connect";
-                addChatMessage("sys", "Media Ready. Click Host or Join.");
-            } catch (e) {
-                console.error(e);
-                document.getElementById('connectionStatus').innerText = "Media Error";
-                document.getElementById('connectionStatus').style.color = "var(--danger)";
-                alert("COULD NOT START: " + e.message + "\n\nMake sure you are on HTTPS or Localhost and have a camera/mic connected.");
+<script>
+    let localStream = new MediaStream(), peerConnection, dataChannel, screenStream;
+    let receivedChunks = [];
+    const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+    async function init() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById('localVideo').srcObject = localStream;
+            addChatMessage("sys", "Camera Active.");
+        } catch (e) {
+            addChatMessage("sys", "No camera detected. Using chat/share only.");
+        }
+    }
+
+    function setupPeerConnection() {
+        peerConnection = new RTCPeerConnection(config);
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        peerConnection.ontrack = e => document.getElementById('remoteVideo').srcObject = e.streams[0];
+        peerConnection.onicecandidate = e => {
+            if (e.candidate === null) {
+                document.getElementById('sdpData').value = JSON.stringify(peerConnection.localDescription);
+                addChatMessage("sys", "Code Generated! Copy and send to peer.");
             }
-        }
+        };
+        peerConnection.ondatachannel = e => { dataChannel = e.channel; setupDataHandlers(); };
+    }
 
-        function setupPeerConnection() {
-            peerConnection = new RTCPeerConnection(config);
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+    async function createOffer() {
+        setupPeerConnection();
+        dataChannel = peerConnection.createDataChannel("chat");
+        setupDataHandlers();
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+    }
 
-            peerConnection.ontrack = e => {
-                document.getElementById('remoteVideo').srcObject = e.streams[0];
-                addChatMessage("sys", "Remote Stream Received!");
-            };
+    async function createAnswer() {
+        const val = document.getElementById('sdpData').value;
+        if (!val) return alert("Paste Host code first!");
+        setupPeerConnection();
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(val)));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+    }
 
-            peerConnection.onicecandidate = e => {
-                if (e.candidate === null) {
-                    document.getElementById('sdpData').value = JSON.stringify(peerConnection.localDescription);
-                    addChatMessage("sys", "Code Generated! Copy it now.");
-                }
-            };
+    async function acceptAnswer() {
+        const val = document.getElementById('sdpData').value;
+        if (!val) return alert("Paste Joiner code first!");
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(val)));
+        addChatMessage("sys", "Connection live!");
+    }
 
-            peerConnection.ondatachannel = e => {
-                dataChannel = e.channel;
-                setupDataHandlers();
-            };
-        }
-
-        async function toggleScreenShare() {
-            if (!screenStream) {
-                try {
-                    screenStream = await navigator.mediaDevices.getDisplayMedia({
-                        video: { width: 2560, height: 1440, frameRate: 120 },
-                        audio: true
-                    });
-                    const videoTrack = screenStream.getVideoTracks()[0];
-                    const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
-
-                    // Set high bitrate
-                    const params = sender.getParameters();
-                    if (params.encodings.length) params.encodings[0].maxBitrate = 25000000;
-                    await sender.setParameters(params);
-
-                    await sender.replaceTrack(videoTrack);
-                    document.getElementById('localVideo').srcObject = screenStream;
-                } catch (e) { alert("Screen share error: " + e.message); }
-            } else {
-                const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
-                sender.replaceTrack(localStream.getVideoTracks()[0]);
-                document.getElementById('localVideo').srcObject = localStream;
-                screenStream.getTracks().forEach(t => t.stop());
-                screenStream = null;
+    function setupDataHandlers() {
+        dataChannel.onopen = () => {
+            addChatMessage("sys", "Connected!");
+            document.getElementById('connectionStatus').innerText = "Live";
+        };
+        dataChannel.onmessage = e => {
+            if (typeof e.data === 'string') {
+                const d = JSON.parse(e.data);
+                if (d.type === 'chat') addChatMessage("friend", d.text);
             }
+        };
+    }
+
+    async function toggleScreenShare() {
+        try {
+            screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+                video: { width: 2560, height: 1440, frameRate: 120 },
+                audio: true 
+            });
+            const videoTrack = screenStream.getVideoTracks()[0];
+            const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (sender) await sender.replaceTrack(videoTrack);
+            document.getElementById('localVideo').srcObject = screenStream;
+        } catch (e) { console.error(e); }
+    }
+
+    // Helper functions for ease of use
+    function copyCode() {
+        const area = document.getElementById('sdpData');
+        area.select();
+        document.execCommand('copy');
+        addChatMessage("sys", "Copied to clipboard!");
+    }
+
+    async function pasteCode() {
+        try {
+            const text = await navigator.clipboard.readText();
+            document.getElementById('sdpData').value = text;
+            addChatMessage("sys", "Code pasted!");
+        } catch (err) {
+            addChatMessage("sys", "Paste blocked by browser. Use Ctrl+V.");
         }
+    }
 
-        // Handshake logic
-        async function createOffer() {
-            setupPeerConnection();
-            dataChannel = peerConnection.createDataChannel("chat");
-            setupDataHandlers();
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            addChatMessage("sys", "Generating Host Code...");
+    function sendMessage() {
+        const i = document.getElementById('chatInput');
+        if (dataChannel?.readyState === "open" && i.value) {
+            dataChannel.send(JSON.stringify({type:'chat', text: i.value}));
+            addChatMessage("me", i.value);
+            i.value = "";
         }
+    }
 
-        async function createAnswer() {
-            const val = document.getElementById('sdpData').value;
-            if (!val) return alert("Paste the Host's code first!");
-            setupPeerConnection();
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(val)));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            addChatMessage("sys", "Generating Joiner Code...");
-        }
+    function addChatMessage(s, m) {
+        const b = document.getElementById('chatBox');
+        b.innerHTML += `<div class="msg ${s}">${m}</div>`;
+        b.scrollTop = b.scrollHeight;
+    }
 
-        async function acceptAnswer() {
-            const val = document.getElementById('sdpData').value;
-            if (!val) return alert("Paste the Joiner's code first!");
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(val)));
-            addChatMessage("sys", "Handshake Finalized!");
-        }
+    function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
+    document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
 
-        function setupDataHandlers() {
-            dataChannel.binaryType = 'arraybuffer';
-            dataChannel.onopen = () => {
-                addChatMessage("sys", "Connected!");
-                document.getElementById('connectionStatus').innerText = "Live";
-            };
-            dataChannel.onmessage = e => {
-                if (typeof e.data === 'string') {
-                    const d = JSON.parse(e.data);
-                    if (d.type === 'chat') addChatMessage("friend", d.text);
-                } else { receivedChunks.push(e.data); }
-            };
-        }
-
-        function sendMessage() {
-            const i = document.getElementById('chatInput');
-            if (dataChannel?.readyState === "open" && i.value) {
-                dataChannel.send(JSON.stringify({ type: 'chat', text: i.value }));
-                addChatMessage("me", i.value);
-                i.value = "";
-            }
-        }
-
-        function addChatMessage(s, m) {
-            const b = document.getElementById('chatBox');
-            b.innerHTML += `<div class="msg ${s}">${m}</div>`;
-            b.scrollTop = b.scrollHeight;
-        }
-
-        function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
-        document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
-
-        init();
-    </script>
+    init();
+</script>
 </body>
-
 </html>
