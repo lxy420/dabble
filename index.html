@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Dabble | v0.2</title>
+    <title>Dabble | Ultra P2P</title>
     <style>
         :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
@@ -32,21 +32,49 @@
         /* UI Elements */
         textarea { width: 100%; height: 100px; background: #0b0d0f; color: var(--accent); border: 1px solid #2d3139; border-radius: 12px; padding: 12px; font-family: monospace; font-size: 10px; margin-top: 15px; resize: none; outline: none; }
         button { padding: 12px 20px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 12px; font-weight: 600; margin-top: 5px; transition: 0.2s; }
+        button:hover { opacity: 0.9; }
         .btn-secondary { background: #2d3139; border: 1px solid #3f444e; }
         .btn-success { background: var(--success); }
-        #chatBox { height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; }
-        .msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; font-size: 14px; }
+        
+        /* Chat & Drag-n-Drop */
+        #chatBox { 
+            height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; 
+            border: 2px dashed transparent; border-radius: 12px; transition: 0.2s;
+        }
+        #chatBox.dragover { border-color: var(--accent); background: rgba(99, 102, 241, 0.05); }
+        .msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; font-size: 14px; word-wrap: break-word; }
         .msg.me { background: var(--accent); align-self: flex-end; }
         .msg.friend { background: #2d3139; align-self: flex-start; }
         .msg.sys { font-size: 11px; color: #9ca3af; align-self: center; text-transform: uppercase; }
+        .msg a { color: #818cf8; text-decoration: none; font-weight: bold; }
+        .msg a:hover { text-decoration: underline; }
+        
+        /* File Transfer UI */
+        #fileTransferUI { display: none; padding: 12px; background: #0b0d0f; border-radius: 10px; margin-bottom: 10px; border: 1px solid #2d3139; }
+        #fileTransferLabel { font-size: 12px; margin-bottom: 5px; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        progress { width: 100%; height: 8px; border-radius: 4px; accent-color: var(--accent); }
+        progress::-webkit-progress-bar { background-color: #2d3139; border-radius: 4px; }
+        progress::-webkit-progress-value { background-color: var(--accent); border-radius: 4px; }
+        
+        .video-overlay { position: absolute; bottom: 10px; left: 10px; z-index: 5; }
     </style>
 </head>
 <body>
 
 <div class="app-container">
     <div class="video-wall">
-        <div class="video-card"><video id="localVideo" autoplay playsinline muted></video></div>
-        <div class="video-card"><video id="remoteVideo" autoplay playsinline></video></div>
+        <div class="video-card">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div class="video-overlay">
+                <button class="btn-secondary" onclick="toggleScreenShare()" id="shareBtn">📺 High-FPS Share</button>
+            </div>
+        </div>
+        <div class="video-card">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div class="video-overlay">
+                <button class="btn-secondary" onclick="goFullscreen('remoteVideo')">⛶ Fullscreen</button>
+            </div>
+        </div>
     </div>
 
     <div class="sidebar">
@@ -71,21 +99,37 @@
         </div>
 
         <div class="panel" style="margin-top:20px;">
-            <div id="chatBox"><div class="msg sys">Welcome to Dabble</div></div>
-            <input type="text" id="chatInput" placeholder="Message..." style="width:100%; padding:12px; background:#0b0d0f; border:1px solid #2d3139; border-radius:10px; color:white; outline:none;">
+            <div id="fileTransferUI">
+                <div id="fileTransferLabel">Transferring...</div>
+                <progress id="fileProgress" value="0" max="100"></progress>
+            </div>
+            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Drop files here to send.</div></div>
+            <input type="text" id="chatInput" placeholder="Type a message..." style="width:100%; padding:12px; background:#0b0d0f; border:1px solid #2d3139; border-radius:10px; color:white; outline:none; box-sizing:border-box;">
         </div>
     </div>
 </div>
 
 <script>
-    let localStream = new MediaStream(), peerConnection, dataChannel;
+    let localStream = new MediaStream(), peerConnection, dataChannel, screenStream;
     const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+    
+    // File Transfer Variables
+    const CHUNK_SIZE = 65536; // 64KB chunks for speed
+    let incomingFileInfo = null;
+    let incomingFileData = [];
+    let receivedSize = 0;
+    let isSendingFile = false;
 
     async function init() {
         try {
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localStream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } }, 
+                audio: true 
+            });
             document.getElementById('localVideo').srcObject = localStream;
         } catch (e) { addChatMessage("sys", "Camera/Mic blocked."); }
+        
+        setupDragAndDrop();
     }
 
     function showLoader(show) {
@@ -100,16 +144,57 @@
         
         peerConnection.onicecandidate = e => {
             if (e.candidate === null) {
-                // Done gathering candidates!
                 document.getElementById('sdpData').value = JSON.stringify(peerConnection.localDescription);
-                showLoader(false); // Hide the indicator
+                showLoader(false); 
                 addChatMessage("sys", "Code Ready!");
             }
         };
 
-        peerConnection.ondatachannel = e => { dataChannel = e.channel; setupDataHandlers(); };
+        peerConnection.ondatachannel = e => { 
+            dataChannel = e.channel; 
+            setupDataHandlers(); 
+        };
     }
 
+    // --- Media Controls ---
+    async function toggleScreenShare() {
+        if (!screenStream) {
+            try {
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 2560, height: 1440, frameRate: 120 }, audio: true });
+                const videoTrack = screenStream.getVideoTracks()[0];
+                
+                if (peerConnection) {
+                    const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+                    if (sender) {
+                        const params = sender.getParameters();
+                        if (params.encodings && params.encodings.length) params.encodings[0].maxBitrate = 25000000;
+                        await sender.setParameters(params);
+                        await sender.replaceTrack(videoTrack);
+                    }
+                }
+                
+                document.getElementById('localVideo').srcObject = screenStream;
+                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing";
+                document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
+                videoTrack.onended = () => { toggleScreenShare(); };
+            } catch (e) { addChatMessage("sys", "Screen share error: " + e.message); }
+        } else {
+            if (peerConnection) {
+                const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+                if (sender) sender.replaceTrack(localStream.getVideoTracks()[0]);
+            }
+            document.getElementById('localVideo').srcObject = localStream;
+            screenStream.getTracks().forEach(t => t.stop());
+            screenStream = null;
+            
+            document.getElementById('shareBtn').innerText = "📺 High-FPS Share";
+            document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
+        }
+    }
+
+    function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
+
+    // --- WebRTC Handshake ---
     async function createOffer() {
         showLoader(true);
         setupPeerConnection();
@@ -138,26 +223,149 @@
         addChatMessage("sys", "Handshake Complete!");
     }
 
+    // --- Data Channel & Messaging ---
     function setupDataHandlers() {
-        dataChannel.onopen = () => addChatMessage("sys", "Data Live!");
+        dataChannel.binaryType = 'arraybuffer'; // Crucial for file transfers
+        dataChannel.bufferedAmountLowThreshold = CHUNK_SIZE * 2; // Buffer management
+
+        dataChannel.onopen = () => addChatMessage("sys", "Data Live! You can now chat and drag-drop files.");
+        
         dataChannel.onmessage = e => {
-            const d = JSON.parse(e.data);
-            if (d.type === 'chat') addChatMessage("friend", d.text);
+            if (typeof e.data === 'string') {
+                const d = JSON.parse(e.data);
+                if (d.type === 'chat') {
+                    addChatMessage("friend", d.text);
+                } else if (d.type === 'file-start') {
+                    // Prepare to receive a file
+                    incomingFileInfo = d;
+                    incomingFileData = [];
+                    receivedSize = 0;
+                    
+                    document.getElementById('fileTransferUI').style.display = 'block';
+                    document.getElementById('fileTransferLabel').innerText = `Receiving: ${d.name}`;
+                    document.getElementById('fileProgress').max = d.size;
+                    document.getElementById('fileProgress').value = 0;
+                }
+            } else {
+                // Receiving binary file chunks
+                incomingFileData.push(e.data);
+                receivedSize += e.data.byteLength;
+                document.getElementById('fileProgress').value = receivedSize;
+
+                if (receivedSize >= incomingFileInfo.size) {
+                    const blob = new Blob(incomingFileData);
+                    const url = URL.createObjectURL(blob);
+                    addChatMessage("friend", `📁 <a href="${url}" download="${incomingFileInfo.name}">Download ${incomingFileInfo.name}</a>`);
+                    
+                    document.getElementById('fileTransferUI').style.display = 'none';
+                    incomingFileInfo = null;
+                    incomingFileData = [];
+                }
+            }
         };
     }
 
-    function copyCode() {
-        document.getElementById('sdpData').select();
-        document.execCommand('copy');
-        addChatMessage("sys", "Copied!");
+    function sendMessage() {
+        const i = document.getElementById('chatInput');
+        if (dataChannel?.readyState === "open" && i.value.trim() !== "") {
+            dataChannel.send(JSON.stringify({ type: 'chat', text: i.value }));
+            addChatMessage("me", i.value);
+            i.value = "";
+        }
+    }
+    document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
+
+    // --- File Transfer & Drag-n-Drop ---
+    function setupDragAndDrop() {
+        const chatBox = document.getElementById('chatBox');
+        
+        chatBox.addEventListener('dragover', e => {
+            e.preventDefault();
+            chatBox.classList.add('dragover');
+        });
+
+        chatBox.addEventListener('dragleave', e => {
+            e.preventDefault();
+            chatBox.classList.remove('dragover');
+        });
+
+        chatBox.addEventListener('drop', e => {
+            e.preventDefault();
+            chatBox.classList.remove('dragover');
+            
+            if (!dataChannel || dataChannel.readyState !== 'open') {
+                return addChatMessage("sys", "Connect to a peer to send files!");
+            }
+            if (isSendingFile) {
+                return addChatMessage("sys", "Already sending a file. Please wait.");
+            }
+
+            if (e.dataTransfer.files.length > 0) {
+                sendFile(e.dataTransfer.files[0]);
+            }
+        });
     }
 
-    async function pasteCode() {
-        const text = await navigator.clipboard.readText();
-        document.getElementById('sdpData').value = text;
-        addChatMessage("sys", "Pasted!");
+    function sendFile(file) {
+        isSendingFile = true;
+        
+        // Setup UI
+        document.getElementById('fileTransferUI').style.display = 'block';
+        document.getElementById('fileTransferLabel').innerText = `Sending: ${file.name}`;
+        const progress = document.getElementById('fileProgress');
+        progress.max = file.size;
+        progress.value = 0;
+
+        // Tell receiver a file is coming
+        dataChannel.send(JSON.stringify({ 
+            type: 'file-start', 
+            name: file.name, 
+            size: file.size 
+        }));
+
+        let offset = 0;
+        
+        const readNextChunk = () => {
+            const slice = file.slice(offset, offset + CHUNK_SIZE);
+            const reader = new FileReader();
+            
+            reader.onload = e => {
+                // Buffer Management (Backpressure)
+                // If the channel is getting clogged, wait for it to clear
+                if (dataChannel.bufferedAmount > dataChannel.bufferedAmountLowThreshold) {
+                    dataChannel.onbufferedamountlow = () => {
+                        dataChannel.onbufferedamountlow = null;
+                        sendChunk(e.target.result);
+                    };
+                } else {
+                    sendChunk(e.target.result);
+                }
+            };
+            reader.readAsArrayBuffer(slice);
+        };
+
+        const sendChunk = data => {
+            dataChannel.send(data);
+            offset += data.byteLength;
+            progress.value = offset;
+
+            if (offset < file.size) {
+                readNextChunk(); // Keep reading
+            } else {
+                // Done sending
+                addChatMessage("me", `Sent file: ${file.name}`);
+                setTimeout(() => { document.getElementById('fileTransferUI').style.display = 'none'; }, 1000);
+                isSendingFile = false;
+            }
+        };
+
+        // Start the process
+        readNextChunk();
     }
 
+    // --- Utilities ---
+    function copyCode() { document.getElementById('sdpData').select(); document.execCommand('copy'); addChatMessage("sys", "Copied!"); }
+    async function pasteCode() { document.getElementById('sdpData').value = await navigator.clipboard.readText(); addChatMessage("sys", "Pasted!"); }
     function addChatMessage(s, m) {
         const b = document.getElementById('chatBox');
         b.innerHTML += `<div class="msg ${s}">${m}</div>`;
