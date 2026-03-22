@@ -5,7 +5,7 @@
     <title>Dabble | Ultra P2P</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        :root { --bg-main: #ff11ff; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
+        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
@@ -120,7 +120,6 @@
 </div>
 
 <script>
-    // --- NATIVE WEBRTC VARIABLES ---
     let localStream = new MediaStream(), screenStream;
     let pc; 
     let dataConn; 
@@ -138,7 +137,6 @@
         audio: { echoCancellation: true, noiseSuppression: true } 
     };
 
-    // Includes Google STUN and Metered.ca's public TURN servers
     const webrtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -163,14 +161,20 @@
     // --- NATIVE SIGNALING LOGIC ---
     function initWebRTC(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
+        
+        // Clear any old, stuck streams from the video player
+        document.getElementById('remoteVideo').srcObject = null;
 
-        // Add our local tracks so the remote peer can hear/see us
+        // Add our local tracks
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-        // CORRECTED: Safely mount the incoming media stream to fix the audio silence bug
+        // CORRECTED: The Mozilla-Standard bulletproof track handler
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
-            if (e.streams && e.streams[0]) {
+            
+            // Only assign the stream if it isn't already assigned. 
+            // This prevents the video element from resetting when the audio track arrives a millisecond later.
+            if (remoteVid.srcObject !== e.streams[0]) {
                 remoteVid.srcObject = e.streams[0];
             }
         };
@@ -290,7 +294,6 @@
         });
     }
 
-    // --- STREAM OPTIMIZATIONS ---
     function applySenderOptimizations(peerConnection) {
         const senders = peerConnection.getSenders();
         senders.forEach(sender => {
@@ -302,7 +305,6 @@
         });
     }
 
-    // --- HARDWARE SETTINGS ---
     function toggleSettings() {
         const modal = document.getElementById('settingsModal');
         modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
@@ -357,22 +359,21 @@
         }
     }
 
-    // CORRECTED: Safe Screen Share Track Swapping (No Bitrate Hacking)
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                // Ensure audio is false so we don't accidentally hijack the microphone track
                 screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 60 }, audio: false });
                 const videoTrack = screenStream.getVideoTracks()[0];
                 videoTrack.contentHint = 'motion';
-                
                 if (pc) {
                     const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
                     if (sender) {
-                        await sender.replaceTrack(videoTrack); // Cleanly swaps video track over network
+                        const params = sender.getParameters();
+                        if (params.encodings && params.encodings.length) params.encodings[0].maxBitrate = 5000000;
+                        await sender.setParameters(params);
+                        await sender.replaceTrack(videoTrack);
                     }
                 }
-                
                 document.getElementById('localVideo').srcObject = screenStream;
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
                 videoTrack.onended = () => { toggleScreenShare(); };
@@ -409,7 +410,6 @@
         if(btn) { btn.innerText = "🗗 Pop Out"; btn.classList.replace('btn-success', 'btn-secondary'); }
     });
 
-    // --- NOTIFICATIONS ---
     function requestNotificationPermission() { if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission(); }
     function triggerNotification(title, body) {
         if (document.hidden) {
@@ -419,12 +419,9 @@
     }
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { unreadCount = 0; document.title = originalTitle; } });
 
-    // --- NATIVE DATA CHANNEL HANDLERS ---
     function setupDataHandlers() {
         dataConn.binaryType = 'arraybuffer';
-
         dataConn.onopen = () => {};
-        
         dataConn.onmessage = e => {
             const data = e.data;
             if (typeof data === 'string') {
@@ -457,7 +454,6 @@
     }
     document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
 
-    // --- DATA QUEUE & CHUNKING LOGIC ---
     function setupDragAndDrop() {
         const chatBox = document.getElementById('chatBox');
         chatBox.addEventListener('dragover', e => { e.preventDefault(); chatBox.classList.add('dragover'); });
