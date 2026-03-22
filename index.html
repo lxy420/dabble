@@ -129,13 +129,11 @@
     
     const shortRoomId = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // NEW: Robust WebRTC Configuration with Google STUN servers
     let peer = new Peer(shortRoomId, {
         config: {
             'iceServers': [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' }
             ]
         }
     }); 
@@ -151,21 +149,42 @@
     let receivedSize = 0;
     let isSendingFile = false;
     let cancelTransferFlag = false; 
-
-    // Notification Variables
     let unreadCount = 0;
     const originalTitle = "Dabble | Ultra P2P";
 
+    // --- Media Initialization & Fallbacks ---
+    function createDummyVideoTrack() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1; canvas.height = 1;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, 1, 1);
+        return canvas.captureStream(1).getVideoTracks()[0];
+    }
+
     async function initMedia() {
         try {
+            // Lowered default webcam constraint to 1080p to prevent encoder crashes
             localStream = await navigator.mediaDevices.getUserMedia({ 
-                video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } }, 
+                video: { width: { ideal: 1920 }, height: { ideal: 1080 } }, 
                 audio: true 
             });
             document.getElementById('localVideo').srcObject = localStream;
-            loadDevices();
-        } catch (e) { addChatMessage("sys", "Camera/Mic blocked."); }
+        } catch (e) { 
+            // If camera is blocked/missing, try audio only
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                localStream.addTrack(createDummyVideoTrack()); // Force video pipeline open
+                addChatMessage("sys", "Camera blocked. Audio active."); 
+            } catch (e2) {
+                // If both fail, create completely empty dummy stream
+                localStream = new MediaStream([createDummyVideoTrack()]);
+                addChatMessage("sys", "Camera & Mic blocked. You can still chat/share screen."); 
+            }
+        }
         
+        // Populate settings drop-downs if devices are available
+        if (navigator.mediaDevices.enumerateDevices) loadDevices();
         setupDragAndDrop();
         requestNotificationPermission();
     }
@@ -207,7 +226,7 @@
             audio: { deviceId: audioId ? { exact: audioId } : undefined },
             video: { 
                 deviceId: videoId ? { exact: videoId } : undefined,
-                width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 }
+                width: { ideal: 1920 }, height: { ideal: 1080 }
             }
         });
 
@@ -272,7 +291,7 @@
         peer.on('call', call => {
             currentCall = call;
             call.answer(localStream);
-            call.on('stream', remoteStream => { document.getElementById('remoteVideo').srcObject = remoteStream; });
+            handleMediaStream(call);
         });
     }
 
@@ -282,14 +301,12 @@
         addChatMessage("sys", "Connecting to room...");
         requestNotificationPermission();
 
-        // NEW: Timeout handler if the connection hangs
         connectionTimeout = setTimeout(() => {
             addChatMessage("sys", "Connection timed out. Ensure the host is still on the page and try again.");
         }, 10000);
 
         dataConn = peer.connect(hostId);
         
-        // NEW: Specific error listener for the connection attempt
         dataConn.on('error', (err) => {
             clearTimeout(connectionTimeout);
             addChatMessage("sys", `Connection failed: ${err}`);
@@ -298,7 +315,21 @@
         setupDataHandlers();
 
         currentCall = peer.call(hostId, localStream);
-        currentCall.on('stream', remoteStream => { document.getElementById('remoteVideo').srcObject = remoteStream; });
+        handleMediaStream(currentCall);
+    }
+
+    // NEW: Centralized stream handler to ensure videos actually play
+    function handleMediaStream(call) {
+        call.on('stream', remoteStream => { 
+            addChatMessage("sys", "Video Stream Connected!");
+            const remoteVid = document.getElementById('remoteVideo');
+            remoteVid.srcObject = remoteStream; 
+            
+            // Explicitly force the video to play, circumventing browser autoplay blocks
+            remoteVid.play().catch(e => {
+                console.log("Autoplay blocked, user interaction needed.", e);
+            });
+        });
     }
 
     // --- Media Controls ---
@@ -327,10 +358,10 @@
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 2560, height: 1440, frameRate: 120 }, audio: true });
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 2560, height: 1440, frameRate: 60 }, audio: true });
                 const videoTrack = screenStream.getVideoTracks()[0];
                 if (currentCall && currentCall.peerConnection) {
-                    const sender = currentCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
+                    const sender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
                     if (sender) {
                         const params = sender.getParameters();
                         if (params.encodings && params.encodings.length) params.encodings[0].maxBitrate = 25000000;
@@ -345,8 +376,9 @@
             } catch (e) { addChatMessage("sys", "Screen share canceled or error."); }
         } else {
             if (currentCall && currentCall.peerConnection) {
-                const sender = currentCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
-                if (sender) sender.replaceTrack(localStream.getVideoTracks()[0]);
+                const sender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+                // Ensure we replace with the actual local video track, even if it's the dummy one
+                if (sender && localStream.getVideoTracks().length > 0) sender.replaceTrack(localStream.getVideoTracks()[0]);
             }
             document.getElementById('localVideo').srcObject = localStream;
             screenStream.getTracks().forEach(t => t.stop());
@@ -382,7 +414,7 @@
     // --- Data Channel & Messaging ---
     function setupDataHandlers() {
         dataConn.on('open', () => {
-            clearTimeout(connectionTimeout); // Clear the timeout on success
+            clearTimeout(connectionTimeout); 
             addChatMessage("sys", "Handshake Complete! Connection is live.");
             document.getElementById('myIdDisplay').style.display = 'none';
         });
