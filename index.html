@@ -5,7 +5,7 @@
     <title>Dabble | Ultra P2P</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
+        :root { --bg-main: #ff11ff; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
@@ -120,7 +120,9 @@
 </div>
 
 <script>
+    // --- NATIVE WEBRTC VARIABLES ---
     let localStream = new MediaStream(), screenStream;
+    let remoteStream = new MediaStream(); 
     let pc; 
     let dataConn; 
     let mqttClient; 
@@ -137,10 +139,13 @@
         audio: { echoCancellation: true, noiseSuppression: true } 
     };
 
+    // Expanded STUN/TURN array to maximize firewall punching
     const webrtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
@@ -162,18 +167,13 @@
     function initWebRTC(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
         
-        // Clear any old, stuck streams from the video player
-        document.getElementById('remoteVideo').srcObject = null;
+        remoteStream = new MediaStream();
+        document.getElementById('remoteVideo').srcObject = remoteStream;
 
-        // Add our local tracks
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-        // CORRECTED: The Mozilla-Standard bulletproof track handler
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
-            
-            // Only assign the stream if it isn't already assigned. 
-            // This prevents the video element from resetting when the audio track arrives a millisecond later.
             if (remoteVid.srcObject !== e.streams[0]) {
                 remoteVid.srcObject = e.streams[0];
             }
@@ -188,16 +188,16 @@
 
         pc.oniceconnectionstatechange = () => {
             console.log("WebRTC State:", pc.iceConnectionState);
+            
             if (pc.iceConnectionState === 'connected') {
                 applySenderOptimizations(pc);
                 addChatMessage("sys", "Handshake Complete! Connection is live.");
                 document.getElementById('myIdDisplay').style.display = 'none';
+                // Note: We are no longer killing the MQTT client here. We keep it alive for late-arriving network routes!
                 
-                if (mqttClient) {
-                    setTimeout(() => {
-                        if(mqttClient) { mqttClient.end(); mqttClient = null; }
-                    }, 10000); 
-                }
+            } else if (pc.iceConnectionState === 'disconnected') {
+                addChatMessage("sys", "Connection unstable. Attempting to recover...");
+                
             } else if (pc.iceConnectionState === 'failed') {
                 addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
             }
