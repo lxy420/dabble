@@ -142,7 +142,6 @@
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
@@ -161,17 +160,12 @@
         requestNotificationPermission();
     }
 
-    // --- NEW: HARDWARE ENCODING FORCER ---
-    // Scans the browser's capabilities and forces H.264 (NVENC/AMF) to the top of the list.
     function forceHardwareEncoding(transceiver) {
         if (transceiver && transceiver.setCodecPreferences && window.RTCRtpReceiver && RTCRtpReceiver.getCapabilities) {
             const capabilities = RTCRtpReceiver.getCapabilities('video');
             if (capabilities && capabilities.codecs) {
-                // Filter out H.264 codecs
                 const h264Codecs = capabilities.codecs.filter(c => c.mimeType.toLowerCase() === 'video/h264');
                 const otherCodecs = capabilities.codecs.filter(c => c.mimeType.toLowerCase() !== 'video/h264');
-                
-                // If H.264 is available, shove it to the top of the priority list
                 if (h264Codecs.length > 0) {
                     transceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
                     console.log("Hardware Encoding (H.264) forced successfully.");
@@ -185,17 +179,16 @@
         document.getElementById('remoteVideo').srcObject = null;
 
         if (isHost) {
+            // ONLY the Host creates the pipelines. 
             const audioTrack = localStream.getAudioTracks()[0] || null;
             pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv', streams: [localStream] });
             
             const videoTrack = localStream.getVideoTracks()[0] || null;
             const videoTransceiver = pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
             
-            // Host forces hardware encoding on creation
             forceHardwareEncoding(videoTransceiver);
-        } else {
-            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-        }
+        } 
+        // Note: The Joiner no longer blindly adds tracks here! That was the bug.
 
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
@@ -306,6 +299,7 @@
 
                     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
                     
+                    // Joiner cleanly fills the Host's existing pipelines
                     const audioTrack = localStream.getAudioTracks()[0];
                     const videoTrack = localStream.getVideoTracks()[0];
                     
@@ -314,7 +308,6 @@
                         if (t.receiver.track.kind === 'audio' && audioTrack) t.sender.replaceTrack(audioTrack);
                         if (t.receiver.track.kind === 'video') {
                             if (videoTrack) t.sender.replaceTrack(videoTrack);
-                            // Joiner forces hardware encoding on the matching transceiver
                             forceHardwareEncoding(t);
                         }
                     });
@@ -412,7 +405,6 @@
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                // Request maximum fidelity from the OS
                 screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 3840, height: 2160, frameRate: 60 }, audio: false });
                 const videoTrack = screenStream.getVideoTracks()[0];
                 videoTrack.contentHint = 'detail'; 
@@ -431,7 +423,7 @@
                             const params = sender.getParameters();
                             params.degradationPreference = 'balanced'; 
                             if (params.encodings && params.encodings.length > 0) {
-                                params.encodings[0].maxBitrate = 50000000; // 50 Mbps Cap
+                                params.encodings[0].maxBitrate = 50000000; 
                                 await sender.setParameters(params);
                             }
                         } catch (paramError) {
