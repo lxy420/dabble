@@ -161,25 +161,6 @@
         requestNotificationPermission();
     }
 
-    // --- NEW: HARDWARE ENCODING FORCER ---
-    // Scans the browser's capabilities and forces H.264 (NVENC/AMF) to the top of the list.
-    function forceHardwareEncoding(transceiver) {
-        if (transceiver && transceiver.setCodecPreferences && window.RTCRtpReceiver && RTCRtpReceiver.getCapabilities) {
-            const capabilities = RTCRtpReceiver.getCapabilities('video');
-            if (capabilities && capabilities.codecs) {
-                // Filter out H.264 codecs
-                const h264Codecs = capabilities.codecs.filter(c => c.mimeType.toLowerCase() === 'video/h264');
-                const otherCodecs = capabilities.codecs.filter(c => c.mimeType.toLowerCase() !== 'video/h264');
-                
-                // If H.264 is available, shove it to the top of the priority list
-                if (h264Codecs.length > 0) {
-                    transceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
-                    console.log("Hardware Encoding (H.264) forced successfully.");
-                }
-            }
-        }
-    }
-
     function initWebRTC(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
         document.getElementById('remoteVideo').srcObject = null;
@@ -189,10 +170,7 @@
             pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv', streams: [localStream] });
             
             const videoTrack = localStream.getVideoTracks()[0] || null;
-            const videoTransceiver = pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
-            
-            // Host forces hardware encoding on creation
-            forceHardwareEncoding(videoTransceiver);
+            pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
         } else {
             localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
         }
@@ -220,12 +198,6 @@
                 applySenderOptimizations(pc);
                 addChatMessage("sys", "Handshake Complete! Connection is live.");
                 document.getElementById('myIdDisplay').style.display = 'none';
-                
-                if (mqttClient) {
-                    setTimeout(() => {
-                        if(mqttClient) { mqttClient.end(); mqttClient = null; }
-                    }, 10000); 
-                }
             } else if (pc.iceConnectionState === 'failed') {
                 addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
             }
@@ -312,11 +284,7 @@
                     pc.getTransceivers().forEach(t => {
                         t.direction = 'sendrecv';
                         if (t.receiver.track.kind === 'audio' && audioTrack) t.sender.replaceTrack(audioTrack);
-                        if (t.receiver.track.kind === 'video') {
-                            if (videoTrack) t.sender.replaceTrack(videoTrack);
-                            // Joiner forces hardware encoding on the matching transceiver
-                            forceHardwareEncoding(t);
-                        }
+                        if (t.receiver.track.kind === 'video' && videoTrack) t.sender.replaceTrack(videoTrack);
                     });
                     
                     while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
@@ -409,15 +377,18 @@
         }
     }
 
+    // --- BULLETPROOF SCREEN SHARE LOGIC ---
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                // Request maximum fidelity from the OS
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 3840, height: 2160, frameRate: 60 }, audio: false });
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+                    video: { width: 3840, height: 2160, frameRate: 60 }, 
+                    audio: false 
+                });
                 const videoTrack = screenStream.getVideoTracks()[0];
-                videoTrack.contentHint = 'detail'; 
                 
                 if (pc) {
+                    // Check both sender and receiver to guarantee we find the correct video pipeline
                     const videoTransceiver = pc.getTransceivers().find(t => 
                         (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
                         (t.sender && t.sender.track && t.sender.track.kind === 'video')
@@ -425,13 +396,17 @@
                     
                     if (videoTransceiver) {
                         const sender = videoTransceiver.sender;
+                        
+                        // 1. SAFELY SWAP THE TRACK FIRST
                         await sender.replaceTrack(videoTrack);
                         
+                        // 2. SAFELY ATTEMPT TO BOOST BITRATE
                         try {
                             const params = sender.getParameters();
                             params.degradationPreference = 'balanced'; 
+                            // Only modify if the browser has actively initialized the encoding array
                             if (params.encodings && params.encodings.length > 0) {
-                                params.encodings[0].maxBitrate = 50000000; // 50 Mbps Cap
+                                params.encodings[0].maxBitrate = 50000000; 
                                 await sender.setParameters(params);
                             }
                         } catch (paramError) {
@@ -443,7 +418,8 @@
                 }
                 
                 document.getElementById('localVideo').srcObject = screenStream;
-                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
+                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; 
+                document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
                 videoTrack.onended = () => { toggleScreenShare(); };
                 
             } catch (e) { 
@@ -459,16 +435,12 @@
                 const originalVideoTrack = localStream.getVideoTracks()[0] || null;
                 if (videoTransceiver) {
                     videoTransceiver.sender.replaceTrack(originalVideoTrack);
-                    try {
-                        const params = videoTransceiver.sender.getParameters();
-                        params.degradationPreference = 'balanced';
-                        videoTransceiver.sender.setParameters(params).catch(e=>console.log(e));
-                    } catch(e) {}
                 }
             }
             document.getElementById('localVideo').srcObject = localStream;
             screenStream.getTracks().forEach(t => t.stop()); screenStream = null;
-            document.getElementById('shareBtn').innerText = "📺 Screen Share"; document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
+            document.getElementById('shareBtn').innerText = "📺 Screen Share"; 
+            document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
             if (isVideoOff && localStream.getVideoTracks().length > 0) localStream.getVideoTracks()[0].enabled = false;
         }
     }
