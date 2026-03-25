@@ -10,7 +10,7 @@
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
         /* Video & Layout */
-        .video-card { position: relative; background: #000; border-radius: 20px; overflow: hidden; border: 1px solid #2d3139; margin-bottom: 20px; min-height: 200px; }
+        .video-card { position: relative; background: #000; border-radius: 20px; overflow: hidden; border: 1px solid #2d3139; margin-bottom: 20px; min-height: 200px; display: flex; align-items: center; justify-content: center; }
         video { width: 100%; aspect-ratio: 16/9; display: block; object-fit: cover; }
         .panel { background: var(--bg-card); padding: 24px; border-radius: 20px; border: 1px solid #2d3139; position: relative; }
         
@@ -53,19 +53,16 @@
         .top-right-overlay { position: absolute; top: 10px; right: 10px; z-index: 5; }
         #myIdDisplay { margin-top: 15px; font-size: 14px; color: #9ca3af; text-align: center; word-break: break-all; background: #0b0d0f; padding: 10px; border-radius: 8px; display: none; border: 1px dashed var(--accent); }
         #roomCode { letter-spacing: 4px; }
+        .placeholder-text { position: absolute; color: #4b5563; font-size: 14px; pointer-events: none; z-index: 1; }
     </style>
 </head>
 <body>
 
 <div id="settingsModal">
     <div class="modal-content">
-        <h3>⚙️ Device Settings</h3>
+        <h3>⚙️ Audio Settings</h3>
         <label>Microphone</label>
         <select id="audioSource" onchange="changeDevice()"></select>
-        
-        <label style="margin-top: 15px;">Camera</label>
-        <select id="videoSource" onchange="changeDevice()"></select>
-        
         <button class="btn-secondary" style="margin-top: 20px;" onclick="toggleSettings()">Done</button>
     </div>
 </div>
@@ -73,18 +70,19 @@
 <div class="app-container">
     <div class="video-wall">
         <div class="video-card">
-            <video id="localVideo" autoplay playsinline muted></video>
+            <span class="placeholder-text" id="localPlaceholder">Voice Active. Click Screen Share to transmit video.</span>
+            <video id="localVideo" autoplay playsinline muted style="z-index: 2;"></video>
             <div class="top-right-overlay">
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleSettings()">⚙️</button>
             </div>
             <div class="video-overlay">
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleAudio()" id="micBtn">🎤 Mute</button>
-                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleVideo()" id="camBtn">📷 Cam Off</button>
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleScreenShare()" id="shareBtn">📺 Screen Share</button>
             </div>
         </div>
         <div class="video-card">
-            <video id="remoteVideo" autoplay playsinline></video>
+            <span class="placeholder-text" id="remotePlaceholder">Waiting for peer's screen...</span>
+            <video id="remoteVideo" autoplay playsinline style="z-index: 2;"></video>
             <div class="video-overlay">
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="togglePiP('remoteVideo')" id="pipBtn">🗗 Pop Out</button>
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="goFullscreen('remoteVideo')">⛶ Fullscreen</button>
@@ -113,7 +111,7 @@
                 </div>
                 <progress id="fileProgress" value="0" max="100"></progress>
             </div>
-            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Media ready.</div></div>
+            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Ready to connect.</div></div>
             <input type="text" id="chatInput" placeholder="Type a message..." style="margin-bottom:0; text-align:left; font-family:inherit;">
         </div>
     </div>
@@ -128,22 +126,21 @@
     let currentRoomId = null;
     let iceQueue = []; 
 
-    let isAudioMuted = false, isVideoOff = false;
+    let isAudioMuted = false;
     const CHUNK_SIZE = 65536; 
     let fileQueue = [], incomingFileInfo = null, incomingFileData = [], receivedSize = 0, isSendingFile = false, cancelTransferFlag = false; 
     let unreadCount = 0; const originalTitle = "Dabble | Ultra P2P";
 
-    const cameraConstraints = { 
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, 
-        audio: { echoCancellation: true, noiseSuppression: true } 
+    // AUDIO ONLY constraint - max prioritization for voice
+    const audioConstraints = { 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
     };
 
     const webrtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
@@ -152,10 +149,10 @@
 
     async function initMedia() {
         try {
-            localStream = await navigator.mediaDevices.getUserMedia(cameraConstraints);
-            document.getElementById('localVideo').srcObject = localStream;
+            // Only request microphone
+            localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
             loadDevices();
-        } catch (e) { addChatMessage("sys", "Camera/Mic not detected. You can still join and screen share!"); }
+        } catch (e) { addChatMessage("sys", "Microphone not detected. You can still join, listen, and screen share!"); }
         
         setupDragAndDrop();
         requestNotificationPermission();
@@ -166,17 +163,28 @@
         document.getElementById('remoteVideo').srcObject = null;
 
         if (isHost) {
+            // 1. Add audio explicitly
             const audioTrack = localStream.getAudioTracks()[0] || null;
-            pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv', streams: [localStream] });
+            if (audioTrack) {
+                pc.addTransceiver(audioTrack, { direction: 'sendrecv', streams: [localStream] });
+            } else {
+                pc.addTransceiver('audio', { direction: 'sendrecv' });
+            }
             
-            const videoTrack = localStream.getVideoTracks()[0] || null;
-            pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv', streams: [localStream] });
-        } else {
-            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+            // 2. Add an EMPTY video transceiver immediately to establish the pipeline.
+            // This prevents needing to renegotiate ICE/SDP when someone hits screen share later.
+            pc.addTransceiver('video', { direction: 'sendrecv', streams: [localStream] });
         }
 
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
+            
+            // If it's a video track, hide the placeholder
+            if(e.track.kind === 'video') {
+                e.track.onunmute = () => { document.getElementById('remotePlaceholder').style.display = 'none'; };
+                e.track.onmute = () => { document.getElementById('remotePlaceholder').style.display = 'block'; };
+            }
+
             if (e.streams && e.streams[0]) {
                 if (remoteVid.srcObject !== e.streams[0]) remoteVid.srcObject = e.streams[0];
             } else {
@@ -196,10 +204,10 @@
             console.log("WebRTC State:", pc.iceConnectionState);
             if (pc.iceConnectionState === 'connected') {
                 applySenderOptimizations(pc);
-                addChatMessage("sys", "Handshake Complete! Connection is live.");
+                addChatMessage("sys", "Connection locked in. Voice is active.");
                 document.getElementById('myIdDisplay').style.display = 'none';
             } else if (pc.iceConnectionState === 'failed') {
-                addChatMessage("sys", "Connection failed. Firewall entirely blocked the WebRTC path.");
+                addChatMessage("sys", "Connection failed due to firewall restrictions.");
             }
         };
     }
@@ -208,7 +216,7 @@
         currentRoomId = Math.floor(100000 + Math.random() * 900000).toString();
         document.getElementById('roomCode').innerText = currentRoomId;
         document.getElementById('myIdDisplay').style.display = 'block';
-        addChatMessage("sys", "Connecting to signaling server...");
+        addChatMessage("sys", "Connecting to server...");
         requestNotificationPermission();
 
         mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
@@ -221,9 +229,8 @@
         mqttClient.on('message', async (topic, message) => {
             try {
                 const data = JSON.parse(message.toString());
-                
                 if (data.type === 'join-request') {
-                    addChatMessage("sys", "Peer found! Negotiating connection...");
+                    addChatMessage("sys", "Peer found! Negotiating...");
                     initWebRTC(true);
                     
                     dataConn = pc.createDataChannel('chat-files');
@@ -232,28 +239,22 @@
                     const offer = await pc.createOffer();
                     await pc.setLocalDescription(offer);
                     mqttClient.publish(`dabble/${currentRoomId}/joiner`, JSON.stringify({ type: 'offer', offer: offer }));
-                
                 } else if (data.type === 'answer') {
                     await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                     while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
-                
                 } else if (data.type === 'ice') {
                     if (pc && pc.remoteDescription && pc.remoteDescription.type) {
                         pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
-                    } else {
-                        iceQueue.push(data.candidate); 
-                    }
+                    } else iceQueue.push(data.candidate); 
                 }
-            } catch (err) {
-                addChatMessage("sys", "Host Negotiation Error: " + err.message);
-            }
+            } catch (err) { console.error(err); }
         });
     }
 
     function joinRoom() {
         currentRoomId = document.getElementById('peerIdInput').value.trim();
         if(!currentRoomId) return alert("Please enter the Room ID first!");
-        addChatMessage("sys", "Connecting to signaling server...");
+        addChatMessage("sys", "Connecting to server...");
         requestNotificationPermission();
 
         mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
@@ -266,9 +267,8 @@
         mqttClient.on('message', async (topic, message) => {
             try {
                 const data = JSON.parse(message.toString());
-                
                 if (data.type === 'offer') {
-                    addChatMessage("sys", "Offer received, finalizing...");
+                    addChatMessage("sys", "Connecting...");
                     initWebRTC(false);
 
                     pc.ondatachannel = (e) => {
@@ -279,12 +279,15 @@
                     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
                     
                     const audioTrack = localStream.getAudioTracks()[0];
-                    const videoTrack = localStream.getVideoTracks()[0];
                     
+                    // The host sent an offer with an audio and empty video pipeline. Let's map our audio to it.
                     pc.getTransceivers().forEach(t => {
-                        t.direction = 'sendrecv';
-                        if (t.receiver.track.kind === 'audio' && audioTrack) t.sender.replaceTrack(audioTrack);
-                        if (t.receiver.track.kind === 'video' && videoTrack) t.sender.replaceTrack(videoTrack);
+                        if (t.receiver.track.kind === 'audio' && audioTrack) {
+                            t.direction = 'sendrecv';
+                            t.sender.replaceTrack(audioTrack);
+                        } else if (t.receiver.track.kind === 'video') {
+                            t.direction = 'sendrecv'; // Keep pipeline open for our potential screen share
+                        }
                     });
                     
                     while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
@@ -292,28 +295,33 @@
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
                     mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'answer', answer: answer }));
-                
                 } else if (data.type === 'ice') {
                     if (pc && pc.remoteDescription && pc.remoteDescription.type) {
                         pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
-                    } else {
-                        iceQueue.push(data.candidate); 
-                    }
+                    } else iceQueue.push(data.candidate); 
                 }
-            } catch (err) {
-                addChatMessage("sys", "Joiner Negotiation Error: " + err.message);
-            }
+            } catch (err) { console.error(err); }
         });
     }
 
-    function applySenderOptimizations(peerConnection) {
-        peerConnection.getSenders().forEach(sender => {
-            if (sender.track && sender.track.kind === 'video') {
+    async function applySenderOptimizations(peerConnection) {
+        peerConnection.getSenders().forEach(async sender => {
+            if (sender.track) {
                 try {
                     const params = sender.getParameters();
-                    params.degradationPreference = 'balanced'; 
-                    sender.setParameters(params).catch(e => console.log(e));
-                } catch(e){}
+                    
+                    // PRIORITIZE VOICE OVER EVERYTHING
+                    if (sender.track.kind === 'audio') {
+                        params.priority = 'high';
+                        params.networkPriority = 'high';
+                    } 
+                    // SACRIFICE RESOLUTION TO MAINTAIN FRAMERATE AND CONNECTION
+                    else if (sender.track.kind === 'video') {
+                        params.degradationPreference = 'maintain-framerate'; 
+                    }
+                    
+                    await sender.setParameters(params);
+                } catch(e) { console.log("Optimization note:", e.message); }
             }
         });
     }
@@ -326,39 +334,36 @@
     async function loadDevices() {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioSelect = document.getElementById('audioSource');
-        const videoSelect = document.getElementById('videoSource');
-        audioSelect.innerHTML = ''; videoSelect.innerHTML = '';
+        audioSelect.innerHTML = ''; 
         devices.forEach(device => {
-            const option = document.createElement('option');
-            option.value = device.deviceId;
-            if (device.kind === 'audioinput') { option.text = device.label || `Microphone ${audioSelect.length + 1}`; audioSelect.appendChild(option); } 
-            else if (device.kind === 'videoinput') { option.text = device.label || `Camera ${videoSelect.length + 1}`; videoSelect.appendChild(option); }
+            if (device.kind === 'audioinput') { 
+                const option = document.createElement('option');
+                option.value = device.deviceId;
+                option.text = device.label || `Microphone ${audioSelect.length + 1}`; 
+                audioSelect.appendChild(option); 
+            } 
         });
     }
 
     async function changeDevice() {
         const audioId = document.getElementById('audioSource').value;
-        const videoId = document.getElementById('videoSource').value;
         if (localStream) localStream.getTracks().forEach(track => track.stop());
         
         try {
             localStream = await navigator.mediaDevices.getUserMedia({
-                audio: audioId ? { deviceId: { exact: audioId }, echoCancellation: true, noiseSuppression: true } : true,
-                video: videoId ? { deviceId: { exact: videoId }, ...cameraConstraints.video } : cameraConstraints.video
+                audio: audioId ? { deviceId: { exact: audioId }, ...audioConstraints.audio } : audioConstraints
             });
-            if (!screenStream) document.getElementById('localVideo').srcObject = localStream;
-        } catch(e) { console.log("No devices found."); }
+        } catch(e) { console.log("No audio devices found."); }
         
         if (pc) {
             const audioTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'audio');
-            const videoTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'video');
-            if (audioTransceiver && localStream.getAudioTracks()[0]) audioTransceiver.sender.replaceTrack(localStream.getAudioTracks()[0]);
-            if (videoTransceiver && !screenStream && localStream.getVideoTracks()[0]) videoTransceiver.sender.replaceTrack(localStream.getVideoTracks()[0]);
+            if (audioTransceiver && localStream.getAudioTracks()[0]) {
+                audioTransceiver.sender.replaceTrack(localStream.getAudioTracks()[0]);
+            }
         }
         
-        isAudioMuted = false; isVideoOff = false;
+        isAudioMuted = false;
         document.getElementById('micBtn').innerText = "🎤 Mute"; document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
-        document.getElementById('camBtn').innerText = "📷 Cam Off"; document.getElementById('camBtn').classList.replace('btn-danger', 'btn-secondary');
     }
 
     function toggleAudio() {
@@ -369,18 +374,11 @@
         }
     }
 
-    function toggleVideo() {
-        if (localStream && localStream.getVideoTracks().length > 0) {
-            isVideoOff = !isVideoOff; localStream.getVideoTracks()[0].enabled = !isVideoOff;
-            const btn = document.getElementById('camBtn'); btn.innerText = isVideoOff ? "🚫 Cam On" : "📷 Cam Off";
-            btn.classList.toggle('btn-danger', isVideoOff); btn.classList.toggle('btn-secondary', !isVideoOff);
-        }
-    }
-
-    // --- BULLETPROOF SCREEN SHARE LOGIC ---
+    // --- STREAMLINED, CONNECTION-SAFE SCREEN SHARE ---
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
+                // Request highest quality possible, WebRTC will compress it based on bandwidth
                 screenStream = await navigator.mediaDevices.getDisplayMedia({ 
                     video: { width: 3840, height: 2160, frameRate: 60 }, 
                     audio: false 
@@ -388,7 +386,7 @@
                 const videoTrack = screenStream.getVideoTracks()[0];
                 
                 if (pc) {
-                    // Check both sender and receiver to guarantee we find the correct video pipeline
+                    // Find our pre-existing, empty video pipeline
                     const videoTransceiver = pc.getTransceivers().find(t => 
                         (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
                         (t.sender && t.sender.track && t.sender.track.kind === 'video')
@@ -396,52 +394,43 @@
                     
                     if (videoTransceiver) {
                         const sender = videoTransceiver.sender;
-                        
-                        // 1. SAFELY SWAP THE TRACK FIRST
+                        // Silently slide the track in. No SDP renegotiation = no connection drop.
                         await sender.replaceTrack(videoTrack);
                         
-                        // 2. SAFELY ATTEMPT TO BOOST BITRATE
+                        // Enforce framerate priority
                         try {
                             const params = sender.getParameters();
-                            params.degradationPreference = 'balanced'; 
-                            // Only modify if the browser has actively initialized the encoding array
-                            if (params.encodings && params.encodings.length > 0) {
-                                params.encodings[0].maxBitrate = 50000000; 
-                                await sender.setParameters(params);
-                            }
-                        } catch (paramError) {
-                            console.warn("Browser prevented dynamic bitrate boost.", paramError);
-                        }
-                    } else {
-                        throw new Error("No video pipeline found to share screen into.");
+                            params.degradationPreference = 'maintain-framerate'; 
+                            await sender.setParameters(params);
+                        } catch (e) {}
                     }
                 }
                 
+                document.getElementById('localPlaceholder').style.display = 'none';
                 document.getElementById('localVideo').srcObject = screenStream;
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; 
                 document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
-                videoTrack.onended = () => { toggleScreenShare(); };
                 
-            } catch (e) { 
-                console.error("Screen Share Error:", e);
-                addChatMessage("sys", `Screen share failed: ${e.message}`); 
-            }
+                videoTrack.onended = () => { if(screenStream) toggleScreenShare(); };
+                
+            } catch (e) { addChatMessage("sys", `Screen share failed: ${e.message}`); }
         } else {
             if (pc) {
                 const videoTransceiver = pc.getTransceivers().find(t => 
                     (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
                     (t.sender && t.sender.track && t.sender.track.kind === 'video')
                 );
-                const originalVideoTrack = localStream.getVideoTracks()[0] || null;
                 if (videoTransceiver) {
-                    videoTransceiver.sender.replaceTrack(originalVideoTrack);
+                    // Replace with null to stop sending, keeping pipeline open
+                    videoTransceiver.sender.replaceTrack(null);
                 }
             }
-            document.getElementById('localVideo').srcObject = localStream;
+            
+            document.getElementById('localVideo').srcObject = null;
+            document.getElementById('localPlaceholder').style.display = 'block';
             screenStream.getTracks().forEach(t => t.stop()); screenStream = null;
             document.getElementById('shareBtn').innerText = "📺 Screen Share"; 
             document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
-            if (isVideoOff && localStream.getVideoTracks().length > 0) localStream.getVideoTracks()[0].enabled = false;
         }
     }
 
