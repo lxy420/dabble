@@ -3,35 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <title>Dabble | Ultra P2P</title>
-    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         :root { --bg-main: #0f1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
         
-        /* Video & Layout */
         .video-card { position: relative; background: #000; border-radius: 20px; overflow: hidden; border: 1px solid #2d3139; margin-bottom: 20px; min-height: 200px; display: flex; align-items: center; justify-content: center; }
         video { width: 100%; aspect-ratio: 16/9; display: block; object-fit: cover; }
         .panel { background: var(--bg-card); padding: 24px; border-radius: 20px; border: 1px solid #2d3139; position: relative; }
         
-        /* UI Elements */
         input, select { width: 100%; padding: 12px; background: #0b0d0f; border: 1px solid #2d3139; border-radius: 10px; color: white; outline: none; box-sizing: border-box; font-family: inherit; font-size: 14px; margin-bottom: 10px;}
         input:focus, select:focus { border-color: var(--accent); }
         button { padding: 12px 20px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 12px; font-weight: 600; transition: 0.2s; width: 100%; }
         button:hover { opacity: 0.9; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-secondary { background: #2d3139; border: 1px solid #3f444e; }
         .btn-success { background: var(--success); }
         .btn-danger { background: var(--danger); }
         .cancel-btn { background: var(--danger); padding: 6px 12px; font-size: 12px; width: auto; border-radius: 8px; margin-left: 10px;}
         .cancel-btn:hover { background: #dc2626; }
         
-        /* Settings Modal */
         #settingsModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
         .modal-content { background: var(--bg-card); padding: 30px; border-radius: 20px; border: 1px solid #2d3139; width: 90%; max-width: 400px; }
         .modal-content h3 { margin-top: 0; margin-bottom: 20px; color: white; }
         .modal-content label { display: block; margin-bottom: 5px; font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; }
         
-        /* Chat & Drag-n-Drop */
         #chatBox { height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 2px dashed transparent; border-radius: 12px; transition: 0.2s; }
         #chatBox.dragover { border-color: var(--accent); background: rgba(99, 102, 241, 0.05); }
         .msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; font-size: 14px; word-wrap: break-word; }
@@ -41,7 +38,6 @@
         .msg a { color: #818cf8; text-decoration: none; font-weight: bold; }
         .msg a:hover { text-decoration: underline; }
         
-        /* File Transfer UI */
         #fileTransferUI { display: none; padding: 12px; background: #0b0d0f; border-radius: 10px; margin-bottom: 10px; border: 1px solid #2d3139; }
         #fileTransferHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         #fileTransferLabel { font-size: 12px; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
@@ -57,6 +53,9 @@
     </style>
 </head>
 <body>
+
+<audio id="localAudio" autoplay muted></audio>
+<audio id="remoteAudio" autoplay></audio>
 
 <div id="settingsModal">
     <div class="modal-content">
@@ -77,7 +76,7 @@
             </div>
             <div class="video-overlay">
                 <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleAudio()" id="micBtn">🎤 Mute</button>
-                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleScreenShare()" id="shareBtn">📺 Screen Share</button>
+                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleScreenShare()" id="shareBtn" disabled>📺 Screen Share</button>
             </div>
         </div>
         <div class="video-card">
@@ -94,8 +93,8 @@
         <div class="panel">
             <input type="text" id="peerIdInput" placeholder="Enter a 6-digit Room ID..." style="text-align: center; font-family: monospace; letter-spacing: 2px;">
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <button onclick="hostRoom()">1. Create Room</button>
-                <button class="btn-secondary" onclick="joinRoom()">2. Join Room</button>
+                <button onclick="hostRoom()" id="hostBtn">1. Create Room</button>
+                <button class="btn-secondary" onclick="joinRoom()" id="joinBtn">2. Join Room</button>
             </div>
             <div id="myIdDisplay">
                 Your Room ID:<br>
@@ -118,304 +117,167 @@
 </div>
 
 <script>
-  let localStream = new MediaStream(), screenStream;
-    let remoteStream = new MediaStream(); 
-    let pc; 
-    let dataConn; 
-    let mqttClient; 
-    let currentRoomId = null;
-
+    let localStream = new MediaStream(), screenStream;
+    let myPeer = null, connectedPeerId = null;
+    let dataConn = null, voiceCall = null, screenCall = null;
     let isAudioMuted = false;
+
+    // File transfer state
     const CHUNK_SIZE = 65536; 
     let fileQueue = [], incomingFileInfo = null, incomingFileData = [], receivedSize = 0, isSendingFile = false, cancelTransferFlag = false; 
     let unreadCount = 0; const originalTitle = "Dabble | Ultra P2P";
 
-    const audioConstraints = { 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: false
-    };
-
-    // CRITICAL: Includes a TURN server to punch through strict network firewalls.
-    const webrtcConfig = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-        ]
-    };
+    const audioConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false };
 
     async function initMedia() {
         try {
             localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+            document.getElementById('localAudio').srcObject = localStream;
             loadDevices();
-        } catch (e) { addChatMessage("sys", "Microphone not detected. You can still join and watch!"); }
+        } catch (e) { 
+            addChatMessage("sys", "Microphone not detected. You can still join, watch, and chat."); 
+        }
         setupDragAndDrop();
         requestNotificationPermission();
     }
 
-    function createPeerConnection(isHost) {
-        pc = new RTCPeerConnection(webrtcConfig);
-        document.getElementById('remoteVideo').srcObject = null;
+    // ==========================================
+    // PEERJS SIGNALING & CONNECTION LOGIC
+    // ==========================================
 
-        // 1. Setup ICE Candidate handling (Trickle ICE)
-        pc.onicecandidate = e => {
-            if (e.candidate && mqttClient && currentRoomId) {
-                const topic = isHost ? `dabble/${currentRoomId}/host-ice` : `dabble/${currentRoomId}/joiner-ice`;
-                mqttClient.publish(topic, JSON.stringify({ candidate: e.candidate }));
-            }
-        };
+    function setupPeerListeners() {
+        // Handle incoming data connection (Chat/Files)
+        myPeer.on('connection', conn => {
+            dataConn = conn;
+            connectedPeerId = conn.peer;
+            setupDataHandlers();
+            addChatMessage("sys", "Peer joined! Connection is active.");
+            document.getElementById('myIdDisplay').style.display = 'none';
+            document.getElementById('shareBtn').disabled = false;
+        });
 
-        // 2. Monitor connection state
-        pc.oniceconnectionstatechange = () => {
-            console.log("WebRTC State:", pc.iceConnectionState);
-            if (pc.iceConnectionState === 'connected') {
-                applySenderOptimizations(pc);
-                addChatMessage("sys", "Connection locked in. Voice is active.");
-                document.getElementById('myIdDisplay').style.display = 'none';
-            } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                addChatMessage("sys", "Connection failed. Networks are too strict.");
-            }
-        };
-
-        // 3. Handle incoming remote tracks (Voice & Screen)
-        pc.ontrack = e => { 
-            const remoteVid = document.getElementById('remoteVideo');
-            if(e.track.kind === 'video') {
-                e.track.onunmute = () => { document.getElementById('remotePlaceholder').style.display = 'none'; };
-                e.track.onmute = () => { document.getElementById('remotePlaceholder').style.display = 'block'; };
-            }
-            if (e.streams && e.streams[0]) {
-                if (remoteVid.srcObject !== e.streams[0]) remoteVid.srcObject = e.streams[0];
+        // Handle incoming media calls (Voice or Screen)
+        myPeer.on('call', call => {
+            if (call.metadata && call.metadata.type === 'screen') {
+                // Tunnel 2: Incoming Screen Share
+                call.answer(); // We don't send anything back on the screen tunnel
+                call.on('stream', remoteScreenStream => {
+                    document.getElementById('remoteVideo').srcObject = remoteScreenStream;
+                    document.getElementById('remotePlaceholder').style.display = 'none';
+                });
+                call.on('close', () => {
+                    document.getElementById('remoteVideo').srcObject = null;
+                    document.getElementById('remotePlaceholder').style.display = 'block';
+                });
             } else {
-                remoteStream.addTrack(e.track);
-                if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
+                // Tunnel 1: Incoming Voice Call
+                call.answer(localStream); // Send our mic back
+                call.on('stream', remoteMicStream => {
+                    document.getElementById('remoteAudio').srcObject = remoteMicStream;
+                });
             }
-        };
-
-        // 4. Add our local audio and a placeholder video pipeline
-        const audioTrack = localStream.getAudioTracks()[0];
-        if (audioTrack) pc.addTransceiver(audioTrack, { direction: 'sendrecv' });
-        else pc.addTransceiver('audio', { direction: 'sendrecv' });
-        pc.addTransceiver('video', { direction: 'sendrecv' }); // Always ready for screen share
+        });
+        
+        myPeer.on('disconnected', () => addChatMessage("sys", "Connection lost."));
+        myPeer.on('error', err => addChatMessage("sys", "Network Error: " + err.type));
     }
 
     function hostRoom() {
-        currentRoomId = Math.floor(100000 + Math.random() * 900000).toString();
-        document.getElementById('roomCode').innerText = currentRoomId;
+        const roomId = Math.floor(100000 + Math.random() * 900000).toString();
+        const peerId = 'dabble-' + roomId;
+        
+        document.getElementById('roomCode').innerText = roomId;
         document.getElementById('myIdDisplay').style.display = 'block';
-        addChatMessage("sys", "Connecting to server...");
+        addChatMessage("sys", "Initializing server...");
 
-        mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
-
-        mqttClient.on('connect', () => {
-            addChatMessage("sys", `Room created. Share ID: ${currentRoomId}`);
-            mqttClient.subscribe(`dabble/${currentRoomId}/join-req`);
-            mqttClient.subscribe(`dabble/${currentRoomId}/joiner-ice`);
-            mqttClient.subscribe(`dabble/${currentRoomId}/answer`);
-        });
-
-        mqttClient.on('message', async (topic, message) => {
-            try {
-                const data = JSON.parse(message.toString());
-                
-                if (topic.endsWith('/join-req')) {
-                    addChatMessage("sys", "Peer joining. Negotiating...");
-                    createPeerConnection(true);
-                    
-                    dataConn = pc.createDataChannel('chat-files');
-                    setupDataHandlers();
-
-                    const offer = await pc.createOffer();
-                    await pc.setLocalDescription(offer);
-                    mqttClient.publish(`dabble/${currentRoomId}/offer`, JSON.stringify({ offer: pc.localDescription }));
-                
-                } else if (topic.endsWith('/answer')) {
-                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-                
-                } else if (topic.endsWith('/joiner-ice')) {
-                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.error(e));
-                    }
-                }
-            } catch (err) { console.error(err); }
+        myPeer = new Peer(peerId, { debug: 2 });
+        
+        myPeer.on('open', id => {
+            addChatMessage("sys", "Room created. Waiting for peer...");
+            document.getElementById('hostBtn').disabled = true;
+            document.getElementById('joinBtn').disabled = true;
+            setupPeerListeners();
         });
     }
 
     function joinRoom() {
-        currentRoomId = document.getElementById('peerIdInput').value.trim();
-        if(!currentRoomId) return alert("Please enter the Room ID first!");
-        addChatMessage("sys", "Connecting to server...");
-
-        mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
-
-        mqttClient.on('connect', () => {
-            mqttClient.subscribe(`dabble/${currentRoomId}/offer`);
-            mqttClient.subscribe(`dabble/${currentRoomId}/host-ice`);
-            // Tell host we are here
-            mqttClient.publish(`dabble/${currentRoomId}/join-req`, JSON.stringify({ hello: 'world' }));
-        });
-
-        mqttClient.on('message', async (topic, message) => {
-            try {
-                const data = JSON.parse(message.toString());
-                
-                if (topic.endsWith('/offer')) {
-                    addChatMessage("sys", "Offer received! Securing connection...");
-                    createPeerConnection(false);
-
-                    pc.ondatachannel = (e) => {
-                        dataConn = e.channel;
-                        setupDataHandlers();
-                    };
-
-                    await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-                    
-                    const answer = await pc.createAnswer();
-                    await pc.setLocalDescription(answer);
-                    mqttClient.publish(`dabble/${currentRoomId}/answer`, JSON.stringify({ answer: pc.localDescription }));
-                
-                } else if (topic.endsWith('/host-ice')) {
-                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.error(e));
-                    }
-                }
-            } catch (err) { console.error(err); }
-        });
-    }
-
-    // --- UTILITIES, CHAT, & SCREEN SHARE BELOW ---
-
-    async function applySenderOptimizations(peerConnection) {
-        peerConnection.getSenders().forEach(async sender => {
-            if (sender.track) {
-                try {
-                    const params = sender.getParameters();
-                    if (sender.track.kind === 'audio') params.priority = 'high';
-                    else if (sender.track.kind === 'video') params.degradationPreference = 'maintain-framerate'; 
-                    await sender.setParameters(params);
-                } catch(e) { }
-            }
-        });
-    }
-
-    function toggleSettings() {
-        const modal = document.getElementById('settingsModal');
-        modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
-    }
-
-    async function loadDevices() {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioSelect = document.getElementById('audioSource');
-        audioSelect.innerHTML = ''; 
-        devices.forEach(device => {
-            if (device.kind === 'audioinput') { 
-                const option = document.createElement('option');
-                option.value = device.deviceId;
-                option.text = device.label || `Microphone ${audioSelect.length + 1}`; 
-                audioSelect.appendChild(option); 
-            } 
-        });
-    }
-
-    async function changeDevice() {
-        const audioId = document.getElementById('audioSource').value;
-        if (localStream) localStream.getTracks().forEach(track => track.stop());
-        try {
-            localStream = await navigator.mediaDevices.getUserMedia({
-                audio: audioId ? { deviceId: { exact: audioId }, ...audioConstraints.audio } : audioConstraints
-            });
-        } catch(e) { console.log("No audio devices found."); }
+        const roomId = document.getElementById('peerIdInput').value.trim();
+        if(!roomId) return alert("Please enter the Room ID first!");
         
-        if (pc) {
-            const audioTransceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'audio');
-            if (audioTransceiver && localStream.getAudioTracks()[0]) {
-                audioTransceiver.sender.replaceTrack(localStream.getAudioTracks()[0]);
-            }
-        }
-        isAudioMuted = false;
-        document.getElementById('micBtn').innerText = "🎤 Mute"; document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
+        connectedPeerId = 'dabble-' + roomId;
+        addChatMessage("sys", "Connecting to host...");
+
+        // Generate a random ID for the joiner
+        myPeer = new Peer({ debug: 2 });
+
+        myPeer.on('open', id => {
+            document.getElementById('hostBtn').disabled = true;
+            document.getElementById('joinBtn').disabled = true;
+            
+            // 1. Establish Data Tunnel
+            dataConn = myPeer.connect(connectedPeerId);
+            setupDataHandlers();
+            
+            dataConn.on('open', () => {
+                addChatMessage("sys", "Connected! Voice is active.");
+                document.getElementById('shareBtn').disabled = false;
+            });
+
+            // 2. Establish Voice Tunnel
+            voiceCall = myPeer.call(connectedPeerId, localStream, { metadata: { type: 'voice' } });
+            voiceCall.on('stream', remoteMicStream => {
+                document.getElementById('remoteAudio').srcObject = remoteMicStream;
+            });
+
+            setupPeerListeners(); // Listen in case host shares screen
+        });
     }
 
-    function toggleAudio() {
-        if (localStream && localStream.getAudioTracks().length > 0) {
-            isAudioMuted = !isAudioMuted; localStream.getAudioTracks()[0].enabled = !isAudioMuted;
-            const btn = document.getElementById('micBtn'); btn.innerText = isAudioMuted ? "🔇 Unmute" : "🎤 Mute";
-            btn.classList.toggle('btn-danger', isAudioMuted); btn.classList.toggle('btn-secondary', !isAudioMuted);
-        }
-    }
+    // ==========================================
+    // DUAL-TUNNEL SCREEN SHARE
+    // ==========================================
 
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 3840, height: 2160, frameRate: 60 }, audio: false });
-                const videoTrack = screenStream.getVideoTracks()[0];
-                
-                if (pc) {
-                    const videoTransceiver = pc.getTransceivers().find(t => (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || (t.sender && t.sender.track && t.sender.track.kind === 'video'));
-                    if (videoTransceiver) {
-                        await videoTransceiver.sender.replaceTrack(videoTrack);
-                        try {
-                            const params = videoTransceiver.sender.getParameters();
-                            params.degradationPreference = 'maintain-framerate'; 
-                            await videoTransceiver.sender.setParameters(params);
-                        } catch (e) {}
-                    }
-                }
+                // Request HQ screen, audio false to preserve bandwidth for the voice tunnel
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 30 }, audio: false });
                 
                 document.getElementById('localPlaceholder').style.display = 'none';
                 document.getElementById('localVideo').srcObject = screenStream;
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; 
                 document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
-                videoTrack.onended = () => { if(screenStream) toggleScreenShare(); };
                 
-            } catch (e) { addChatMessage("sys", `Screen share failed: ${e.message}`); }
+                // Blast the screen stream over a totally separate connection
+                if (myPeer && connectedPeerId) {
+                    screenCall = myPeer.call(connectedPeerId, screenStream, { metadata: { type: 'screen' } });
+                }
+                
+                // Handle user clicking "Stop sharing" in browser UI
+                screenStream.getVideoTracks()[0].onended = () => toggleScreenShare();
+                
+            } catch (e) { addChatMessage("sys", `Screen share canceled or failed.`); }
         } else {
-            if (pc) {
-                const videoTransceiver = pc.getTransceivers().find(t => (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || (t.sender && t.sender.track && t.sender.track.kind === 'video'));
-                if (videoTransceiver) videoTransceiver.sender.replaceTrack(null);
-            }
+            screenStream.getTracks().forEach(t => t.stop());
+            screenStream = null;
             document.getElementById('localVideo').srcObject = null;
             document.getElementById('localPlaceholder').style.display = 'block';
-            screenStream.getTracks().forEach(t => t.stop()); screenStream = null;
             document.getElementById('shareBtn').innerText = "📺 Screen Share"; 
             document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
+            
+            // Close the screen tunnel without touching the voice tunnel
+            if (screenCall) screenCall.close();
         }
     }
 
-    function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
-    async function togglePiP(id) {
-        const video = document.getElementById(id);
-        if (document.pictureInPictureElement) await document.exitPictureInPicture();
-        else {
-            if (document.pictureInPictureEnabled) { try { await video.requestPictureInPicture(); } catch (err) { addChatMessage("sys", "Pop-out failed."); } } 
-            else addChatMessage("sys", "Pop-out not supported.");
-        }
-    }
 
-    document.getElementById('remoteVideo').addEventListener('enterpictureinpicture', () => {
-        const btn = document.getElementById('pipBtn');
-        if(btn) { btn.innerText = "🗗 Bring Back"; btn.classList.replace('btn-secondary', 'btn-success'); }
-    });
-    document.getElementById('remoteVideo').addEventListener('leavepictureinpicture', () => {
-        const btn = document.getElementById('pipBtn');
-        if(btn) { btn.innerText = "🗗 Pop Out"; btn.classList.replace('btn-success', 'btn-secondary'); }
-    });
-
-    function requestNotificationPermission() { if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission(); }
-    function triggerNotification(title, body) {
-        if (document.hidden) {
-            unreadCount++; document.title = `(${unreadCount}) New ${title}!`;
-            if ("Notification" in window && Notification.permission === "granted") new Notification(`Dabble: New ${title}`, { body: body, icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="%236366f1"/></svg>' });
-        }
-    }
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { unreadCount = 0; document.title = originalTitle; } });
+    // ==========================================
+    // UTILITIES, CHAT & FILE TRANSFERS
+    // ==========================================
 
     function setupDataHandlers() {
-        dataConn.binaryType = 'arraybuffer';
-        dataConn.onopen = () => {};
-        dataConn.onmessage = e => {
-            const data = e.data;
+        if (!dataConn) return;
+        dataConn.on('data', data => {
             if (typeof data === 'string') {
                 const d = JSON.parse(data);
                 if (d.type === 'chat') { addChatMessage("friend", d.text); triggerNotification('Message', d.text); } 
@@ -435,24 +297,29 @@
                     resetFileTransferUI();
                 }
             }
-        };
+        });
     }
 
     function sendMessage() {
         const i = document.getElementById('chatInput');
-        if (dataConn && dataConn.readyState === "open" && i.value.trim() !== "") {
-            dataConn.send(JSON.stringify({ type: 'chat', text: i.value })); addChatMessage("me", i.value); i.value = "";
+        if (dataConn && dataConn.open && i.value.trim() !== "") {
+            dataConn.send(JSON.stringify({ type: 'chat', text: i.value })); 
+            addChatMessage("me", i.value); 
+            i.value = "";
+        } else if (!dataConn || !dataConn.open) {
+            addChatMessage("sys", "You must be connected to send messages.");
         }
     }
     document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
 
+    // File Drag & Drop Queue
     function setupDragAndDrop() {
         const chatBox = document.getElementById('chatBox');
         chatBox.addEventListener('dragover', e => { e.preventDefault(); chatBox.classList.add('dragover'); });
         chatBox.addEventListener('dragleave', e => { e.preventDefault(); chatBox.classList.remove('dragover'); });
         chatBox.addEventListener('drop', e => {
             e.preventDefault(); chatBox.classList.remove('dragover');
-            if (!dataConn || dataConn.readyState !== "open") return addChatMessage("sys", "Connect to a peer to send files!");
+            if (!dataConn || !dataConn.open) return addChatMessage("sys", "Connect to a peer to send files!");
             if (e.dataTransfer.files.length > 0) {
                 for (let i = 0; i < e.dataTransfer.files.length; i++) fileQueue.push(e.dataTransfer.files[i]);
                 if (e.dataTransfer.files.length > 1) addChatMessage("sys", `Queued ${e.dataTransfer.files.length} files.`);
@@ -478,7 +345,7 @@
             const slice = file.slice(offset, offset + CHUNK_SIZE); const reader = new FileReader();
             reader.onload = e => {
                 dataConn.send(e.target.result); offset += e.target.result.byteLength; progress.value = offset;
-                if (offset < file.size) { if(dataConn.bufferedAmount > 2000000) setTimeout(readNextChunk, 50); else readNextChunk(); } 
+                if (offset < file.size) { setTimeout(readNextChunk, 10); } // Adjusted timeout for PeerJS
                 else { addChatMessage("me", `Sent file: ${file.name}`); processFileQueue(); }
             }; reader.readAsArrayBuffer(slice);
         }; readNextChunk();
@@ -488,9 +355,63 @@
         if (isSendingFile) { cancelTransferFlag = true; fileQueue = []; addChatMessage("sys", "Upload canceled."); } 
         else if (incomingFileInfo) { dataConn.send(JSON.stringify({ type: 'file-cancel-request' })); addChatMessage("sys", "Download canceled."); resetFileTransferUI(); }
     }
-
     function resetFileTransferUI() { document.getElementById('fileTransferUI').style.display = 'none'; incomingFileInfo = null; incomingFileData = []; receivedSize = 0; isSendingFile = false; cancelTransferFlag = false; }
+    
     function addChatMessage(s, m) { const b = document.getElementById('chatBox'); b.innerHTML += `<div class="msg ${s}">${m}</div>`; b.scrollTop = b.scrollHeight; }
+
+    // Device Management
+    async function loadDevices() {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioSelect = document.getElementById('audioSource');
+        audioSelect.innerHTML = ''; 
+        devices.forEach(device => {
+            if (device.kind === 'audioinput') { 
+                const option = document.createElement('option');
+                option.value = device.deviceId; option.text = device.label || `Microphone ${audioSelect.length + 1}`; 
+                audioSelect.appendChild(option); 
+            } 
+        });
+    }
+
+    async function changeDevice() {
+        const audioId = document.getElementById('audioSource').value;
+        if (localStream) localStream.getTracks().forEach(track => track.stop());
+        try { localStream = await navigator.mediaDevices.getUserMedia({ audio: audioId ? { deviceId: { exact: audioId }, ...audioConstraints.audio } : audioConstraints }); } catch(e) {}
+        document.getElementById('localAudio').srcObject = localStream;
+        
+        // If actively connected, replace the track in the voice call
+        if (voiceCall && voiceCall.peerConnection) {
+            const audioSender = voiceCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+            if (audioSender && localStream.getAudioTracks()[0]) audioSender.replaceTrack(localStream.getAudioTracks()[0]);
+        }
+        isAudioMuted = false; document.getElementById('micBtn').innerText = "🎤 Mute"; document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
+    }
+
+    function toggleAudio() {
+        if (localStream && localStream.getAudioTracks().length > 0) {
+            isAudioMuted = !isAudioMuted; localStream.getAudioTracks()[0].enabled = !isAudioMuted;
+            const btn = document.getElementById('micBtn'); btn.innerText = isAudioMuted ? "🔇 Unmute" : "🎤 Mute";
+            btn.classList.toggle('btn-danger', isAudioMuted); btn.classList.toggle('btn-secondary', !isAudioMuted);
+        }
+    }
+
+    function toggleSettings() { const modal = document.getElementById('settingsModal'); modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex'; }
+    function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
+    async function togglePiP(id) {
+        const video = document.getElementById(id);
+        if (document.pictureInPictureElement) await document.exitPictureInPicture();
+        else { if (document.pictureInPictureEnabled) { try { await video.requestPictureInPicture(); } catch (err) {} } }
+    }
+    document.getElementById('remoteVideo').addEventListener('enterpictureinpicture', () => { const btn = document.getElementById('pipBtn'); if(btn) { btn.innerText = "🗗 Bring Back"; btn.classList.replace('btn-secondary', 'btn-success'); } });
+    document.getElementById('remoteVideo').addEventListener('leavepictureinpicture', () => { const btn = document.getElementById('pipBtn'); if(btn) { btn.innerText = "🗗 Pop Out"; btn.classList.replace('btn-success', 'btn-secondary'); } });
+    function requestNotificationPermission() { if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission(); }
+    function triggerNotification(title, body) {
+        if (document.hidden) {
+            unreadCount++; document.title = `(${unreadCount}) New ${title}!`;
+            if ("Notification" in window && Notification.permission === "granted") new Notification(`Dabble`, { body: body });
+        }
+    }
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { unreadCount = 0; document.title = originalTitle; } });
 
     initMedia();
 </script>
