@@ -118,13 +118,12 @@
 </div>
 
 <script>
-    let localStream = new MediaStream(), screenStream;
+   let localStream = new MediaStream(), screenStream;
     let remoteStream = new MediaStream(); 
     let pc; 
     let dataConn; 
     let mqttClient; 
     let currentRoomId = null;
-    let iceQueue = []; 
 
     let isAudioMuted = false;
     const CHUNK_SIZE = 65536; 
@@ -137,19 +136,18 @@
         video: false
     };
 
+    // Stripped out the flaky TURN server. Relying on Google's heavy-duty STUNs.
     const webrtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' }
         ]
     };
 
     async function initMedia() {
         try {
-            // Only request microphone
             localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
             loadDevices();
         } catch (e) { addChatMessage("sys", "Microphone not detected. You can still join, listen, and screen share!"); }
@@ -163,41 +161,24 @@
         document.getElementById('remoteVideo').srcObject = null;
 
         if (isHost) {
-            // 1. Add audio explicitly
             const audioTrack = localStream.getAudioTracks()[0] || null;
-            if (audioTrack) {
-                pc.addTransceiver(audioTrack, { direction: 'sendrecv', streams: [localStream] });
-            } else {
-                pc.addTransceiver('audio', { direction: 'sendrecv' });
-            }
+            if (audioTrack) pc.addTransceiver(audioTrack, { direction: 'sendrecv' });
+            else pc.addTransceiver('audio', { direction: 'sendrecv' });
             
-            // 2. Add an EMPTY video transceiver immediately to establish the pipeline.
-            // This prevents needing to renegotiate ICE/SDP when someone hits screen share later.
-            pc.addTransceiver('video', { direction: 'sendrecv', streams: [localStream] });
+            // Empty video pipeline
+            pc.addTransceiver('video', { direction: 'sendrecv' });
         }
 
         pc.ontrack = e => { 
             const remoteVid = document.getElementById('remoteVideo');
-            
-            // If it's a video track, hide the placeholder
             if(e.track.kind === 'video') {
                 e.track.onunmute = () => { document.getElementById('remotePlaceholder').style.display = 'none'; };
                 e.track.onmute = () => { document.getElementById('remotePlaceholder').style.display = 'block'; };
             }
-
-            if (e.streams && e.streams[0]) {
-                if (remoteVid.srcObject !== e.streams[0]) remoteVid.srcObject = e.streams[0];
-            } else {
-                remoteStream.addTrack(e.track);
-                if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
-            }
-        };
-
-        pc.onicecandidate = e => {
-            if (e.candidate && mqttClient) {
-                const topic = isHost ? `dabble/${currentRoomId}/joiner` : `dabble/${currentRoomId}/host`;
-                mqttClient.publish(topic, JSON.stringify({ type: 'ice', candidate: e.candidate }));
-            }
+            
+            // Group incoming tracks safely
+            remoteStream.addTrack(e.track);
+            if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
         };
 
         pc.oniceconnectionstatechange = () => {
@@ -206,10 +187,25 @@
                 applySenderOptimizations(pc);
                 addChatMessage("sys", "Connection locked in. Voice is active.");
                 document.getElementById('myIdDisplay').style.display = 'none';
-            } else if (pc.iceConnectionState === 'failed') {
-                addChatMessage("sys", "Connection failed due to firewall restrictions.");
+            } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                addChatMessage("sys", "Connection failed. Please refresh and try again.");
             }
         };
+    }
+
+    // NEW: Function to bundle all network pathways before sending
+    function waitForIce(peerConnection) {
+        return new Promise(resolve => {
+            if (peerConnection.iceGatheringState === 'complete') return resolve();
+            const checkState = () => {
+                if (peerConnection.iceGatheringState === 'complete') {
+                    peerConnection.removeEventListener('icegatheringstatechange', checkState);
+                    resolve();
+                }
+            };
+            peerConnection.addEventListener('icegatheringstatechange', checkState);
+            setTimeout(resolve, 2500); // 2.5 second timeout to prevent hanging
+        });
     }
 
     function hostRoom() {
@@ -230,7 +226,7 @@
             try {
                 const data = JSON.parse(message.toString());
                 if (data.type === 'join-request') {
-                    addChatMessage("sys", "Peer found! Negotiating...");
+                    addChatMessage("sys", "Peer found! Gathering network routes (takes ~2s)...");
                     initWebRTC(true);
                     
                     dataConn = pc.createDataChannel('chat-files');
@@ -238,14 +234,13 @@
 
                     const offer = await pc.createOffer();
                     await pc.setLocalDescription(offer);
-                    mqttClient.publish(`dabble/${currentRoomId}/joiner`, JSON.stringify({ type: 'offer', offer: offer }));
+                    
+                    // Wait for all ICE candidates to bundle, then send once
+                    await waitForIce(pc);
+                    mqttClient.publish(`dabble/${currentRoomId}/joiner`, JSON.stringify({ type: 'offer', offer: pc.localDescription }));
+                
                 } else if (data.type === 'answer') {
                     await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-                    while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
-                } else if (data.type === 'ice') {
-                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
-                    } else iceQueue.push(data.candidate); 
                 }
             } catch (err) { console.error(err); }
         });
@@ -268,7 +263,7 @@
             try {
                 const data = JSON.parse(message.toString());
                 if (data.type === 'offer') {
-                    addChatMessage("sys", "Connecting...");
+                    addChatMessage("sys", "Offer received! Generating return route...");
                     initWebRTC(false);
 
                     pc.ondatachannel = (e) => {
@@ -277,28 +272,23 @@
                     };
 
                     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-                    
                     const audioTrack = localStream.getAudioTracks()[0];
                     
-                    // The host sent an offer with an audio and empty video pipeline. Let's map our audio to it.
                     pc.getTransceivers().forEach(t => {
                         if (t.receiver.track.kind === 'audio' && audioTrack) {
                             t.direction = 'sendrecv';
                             t.sender.replaceTrack(audioTrack);
                         } else if (t.receiver.track.kind === 'video') {
-                            t.direction = 'sendrecv'; // Keep pipeline open for our potential screen share
+                            t.direction = 'sendrecv';
                         }
                     });
                     
-                    while (iceQueue.length > 0) pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift())).catch(e => console.warn(e));
-
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
-                    mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'answer', answer: answer }));
-                } else if (data.type === 'ice') {
-                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.warn(e));
-                    } else iceQueue.push(data.candidate); 
+                    
+                    // Wait for all ICE candidates to bundle, then send once
+                    await waitForIce(pc);
+                    mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'answer', answer: pc.localDescription }));
                 }
             } catch (err) { console.error(err); }
         });
@@ -309,19 +299,13 @@
             if (sender.track) {
                 try {
                     const params = sender.getParameters();
-                    
-                    // PRIORITIZE VOICE OVER EVERYTHING
                     if (sender.track.kind === 'audio') {
                         params.priority = 'high';
-                        params.networkPriority = 'high';
-                    } 
-                    // SACRIFICE RESOLUTION TO MAINTAIN FRAMERATE AND CONNECTION
-                    else if (sender.track.kind === 'video') {
+                    } else if (sender.track.kind === 'video') {
                         params.degradationPreference = 'maintain-framerate'; 
                     }
-                    
                     await sender.setParameters(params);
-                } catch(e) { console.log("Optimization note:", e.message); }
+                } catch(e) { }
             }
         });
     }
@@ -374,11 +358,9 @@
         }
     }
 
-    // --- STREAMLINED, CONNECTION-SAFE SCREEN SHARE ---
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                // Request highest quality possible, WebRTC will compress it based on bandwidth
                 screenStream = await navigator.mediaDevices.getDisplayMedia({ 
                     video: { width: 3840, height: 2160, frameRate: 60 }, 
                     audio: false 
@@ -386,7 +368,6 @@
                 const videoTrack = screenStream.getVideoTracks()[0];
                 
                 if (pc) {
-                    // Find our pre-existing, empty video pipeline
                     const videoTransceiver = pc.getTransceivers().find(t => 
                         (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
                         (t.sender && t.sender.track && t.sender.track.kind === 'video')
@@ -394,10 +375,7 @@
                     
                     if (videoTransceiver) {
                         const sender = videoTransceiver.sender;
-                        // Silently slide the track in. No SDP renegotiation = no connection drop.
                         await sender.replaceTrack(videoTrack);
-                        
-                        // Enforce framerate priority
                         try {
                             const params = sender.getParameters();
                             params.degradationPreference = 'maintain-framerate'; 
@@ -420,10 +398,7 @@
                     (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
                     (t.sender && t.sender.track && t.sender.track.kind === 'video')
                 );
-                if (videoTransceiver) {
-                    // Replace with null to stop sending, keeping pipeline open
-                    videoTransceiver.sender.replaceTrack(null);
-                }
+                if (videoTransceiver) videoTransceiver.sender.replaceTrack(null);
             }
             
             document.getElementById('localVideo').srcObject = null;
@@ -477,8 +452,8 @@
                     document.getElementById('fileTransferLabel').innerText = `Receiving: ${d.name}`;
                     document.getElementById('fileProgress').max = d.size; document.getElementById('fileProgress').value = 0;
                     triggerNotification('File Transfer', `Receiving ${d.name}`); 
-                } else if (d.type === 'file-cancel') { addChatMessage("sys", "The sender canceled the file transfer."); resetFileTransferUI(); } 
-                else if (d.type === 'file-cancel-request') { cancelTransferFlag = true; addChatMessage("sys", "The recipient canceled the download."); }
+                } else if (d.type === 'file-cancel') { addChatMessage("sys", "Sender canceled transfer."); resetFileTransferUI(); } 
+                else if (d.type === 'file-cancel-request') { cancelTransferFlag = true; addChatMessage("sys", "Recipient canceled download."); }
             } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
                 incomingFileData.push(data); receivedSize += data.byteLength; document.getElementById('fileProgress').value = receivedSize;
                 if (receivedSize >= incomingFileInfo.size) {
@@ -537,8 +512,8 @@
     }
 
     function cancelTransfer() {
-        if (isSendingFile) { cancelTransferFlag = true; fileQueue = []; addChatMessage("sys", "You canceled the upload and cleared the queue."); } 
-        else if (incomingFileInfo) { dataConn.send(JSON.stringify({ type: 'file-cancel-request' })); addChatMessage("sys", "You canceled the download."); resetFileTransferUI(); }
+        if (isSendingFile) { cancelTransferFlag = true; fileQueue = []; addChatMessage("sys", "Upload canceled."); } 
+        else if (incomingFileInfo) { dataConn.send(JSON.stringify({ type: 'file-cancel-request' })); addChatMessage("sys", "Download canceled."); resetFileTransferUI(); }
     }
 
     function resetFileTransferUI() { document.getElementById('fileTransferUI').style.display = 'none'; incomingFileInfo = null; incomingFileData = []; receivedSize = 0; isSendingFile = false; cancelTransferFlag = false; }
