@@ -118,7 +118,7 @@
 </div>
 
 <script>
-   let localStream = new MediaStream(), screenStream;
+  let localStream = new MediaStream(), screenStream;
     let remoteStream = new MediaStream(); 
     let pc; 
     let dataConn; 
@@ -130,19 +130,18 @@
     let fileQueue = [], incomingFileInfo = null, incomingFileData = [], receivedSize = 0, isSendingFile = false, cancelTransferFlag = false; 
     let unreadCount = 0; const originalTitle = "Dabble | Ultra P2P";
 
-    // AUDIO ONLY constraint - max prioritization for voice
     const audioConstraints = { 
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false
     };
 
-    // Stripped out the flaky TURN server. Relying on Google's heavy-duty STUNs.
+    // CRITICAL: Includes a TURN server to punch through strict network firewalls.
     const webrtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' }
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
         ]
     };
 
@@ -150,37 +149,24 @@
         try {
             localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
             loadDevices();
-        } catch (e) { addChatMessage("sys", "Microphone not detected. You can still join, listen, and screen share!"); }
-        
+        } catch (e) { addChatMessage("sys", "Microphone not detected. You can still join and watch!"); }
         setupDragAndDrop();
         requestNotificationPermission();
     }
 
-    function initWebRTC(isHost) {
+    function createPeerConnection(isHost) {
         pc = new RTCPeerConnection(webrtcConfig);
         document.getElementById('remoteVideo').srcObject = null;
 
-        if (isHost) {
-            const audioTrack = localStream.getAudioTracks()[0] || null;
-            if (audioTrack) pc.addTransceiver(audioTrack, { direction: 'sendrecv' });
-            else pc.addTransceiver('audio', { direction: 'sendrecv' });
-            
-            // Empty video pipeline
-            pc.addTransceiver('video', { direction: 'sendrecv' });
-        }
-
-        pc.ontrack = e => { 
-            const remoteVid = document.getElementById('remoteVideo');
-            if(e.track.kind === 'video') {
-                e.track.onunmute = () => { document.getElementById('remotePlaceholder').style.display = 'none'; };
-                e.track.onmute = () => { document.getElementById('remotePlaceholder').style.display = 'block'; };
+        // 1. Setup ICE Candidate handling (Trickle ICE)
+        pc.onicecandidate = e => {
+            if (e.candidate && mqttClient && currentRoomId) {
+                const topic = isHost ? `dabble/${currentRoomId}/host-ice` : `dabble/${currentRoomId}/joiner-ice`;
+                mqttClient.publish(topic, JSON.stringify({ candidate: e.candidate }));
             }
-            
-            // Group incoming tracks safely
-            remoteStream.addTrack(e.track);
-            if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
         };
 
+        // 2. Monitor connection state
         pc.oniceconnectionstatechange = () => {
             console.log("WebRTC State:", pc.iceConnectionState);
             if (pc.iceConnectionState === 'connected') {
@@ -188,24 +174,30 @@
                 addChatMessage("sys", "Connection locked in. Voice is active.");
                 document.getElementById('myIdDisplay').style.display = 'none';
             } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                addChatMessage("sys", "Connection failed. Please refresh and try again.");
+                addChatMessage("sys", "Connection failed. Networks are too strict.");
             }
         };
-    }
 
-    // NEW: Function to bundle all network pathways before sending
-    function waitForIce(peerConnection) {
-        return new Promise(resolve => {
-            if (peerConnection.iceGatheringState === 'complete') return resolve();
-            const checkState = () => {
-                if (peerConnection.iceGatheringState === 'complete') {
-                    peerConnection.removeEventListener('icegatheringstatechange', checkState);
-                    resolve();
-                }
-            };
-            peerConnection.addEventListener('icegatheringstatechange', checkState);
-            setTimeout(resolve, 2500); // 2.5 second timeout to prevent hanging
-        });
+        // 3. Handle incoming remote tracks (Voice & Screen)
+        pc.ontrack = e => { 
+            const remoteVid = document.getElementById('remoteVideo');
+            if(e.track.kind === 'video') {
+                e.track.onunmute = () => { document.getElementById('remotePlaceholder').style.display = 'none'; };
+                e.track.onmute = () => { document.getElementById('remotePlaceholder').style.display = 'block'; };
+            }
+            if (e.streams && e.streams[0]) {
+                if (remoteVid.srcObject !== e.streams[0]) remoteVid.srcObject = e.streams[0];
+            } else {
+                remoteStream.addTrack(e.track);
+                if (remoteVid.srcObject !== remoteStream) remoteVid.srcObject = remoteStream;
+            }
+        };
+
+        // 4. Add our local audio and a placeholder video pipeline
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (audioTrack) pc.addTransceiver(audioTrack, { direction: 'sendrecv' });
+        else pc.addTransceiver('audio', { direction: 'sendrecv' });
+        pc.addTransceiver('video', { direction: 'sendrecv' }); // Always ready for screen share
     }
 
     function hostRoom() {
@@ -213,34 +205,38 @@
         document.getElementById('roomCode').innerText = currentRoomId;
         document.getElementById('myIdDisplay').style.display = 'block';
         addChatMessage("sys", "Connecting to server...");
-        requestNotificationPermission();
 
         mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
 
         mqttClient.on('connect', () => {
-            addChatMessage("sys", "Waiting for someone to join using your Room ID...");
-            mqttClient.subscribe(`dabble/${currentRoomId}/host`);
+            addChatMessage("sys", `Room created. Share ID: ${currentRoomId}`);
+            mqttClient.subscribe(`dabble/${currentRoomId}/join-req`);
+            mqttClient.subscribe(`dabble/${currentRoomId}/joiner-ice`);
+            mqttClient.subscribe(`dabble/${currentRoomId}/answer`);
         });
 
         mqttClient.on('message', async (topic, message) => {
             try {
                 const data = JSON.parse(message.toString());
-                if (data.type === 'join-request') {
-                    addChatMessage("sys", "Peer found! Gathering network routes (takes ~2s)...");
-                    initWebRTC(true);
+                
+                if (topic.endsWith('/join-req')) {
+                    addChatMessage("sys", "Peer joining. Negotiating...");
+                    createPeerConnection(true);
                     
                     dataConn = pc.createDataChannel('chat-files');
                     setupDataHandlers();
 
                     const offer = await pc.createOffer();
                     await pc.setLocalDescription(offer);
-                    
-                    // Wait for all ICE candidates to bundle, then send once
-                    await waitForIce(pc);
-                    mqttClient.publish(`dabble/${currentRoomId}/joiner`, JSON.stringify({ type: 'offer', offer: pc.localDescription }));
+                    mqttClient.publish(`dabble/${currentRoomId}/offer`, JSON.stringify({ offer: pc.localDescription }));
                 
-                } else if (data.type === 'answer') {
+                } else if (topic.endsWith('/answer')) {
                     await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                
+                } else if (topic.endsWith('/joiner-ice')) {
+                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.error(e));
+                    }
                 }
             } catch (err) { console.error(err); }
         });
@@ -250,21 +246,23 @@
         currentRoomId = document.getElementById('peerIdInput').value.trim();
         if(!currentRoomId) return alert("Please enter the Room ID first!");
         addChatMessage("sys", "Connecting to server...");
-        requestNotificationPermission();
 
         mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
 
         mqttClient.on('connect', () => {
-            mqttClient.subscribe(`dabble/${currentRoomId}/joiner`);
-            mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'join-request' }));
+            mqttClient.subscribe(`dabble/${currentRoomId}/offer`);
+            mqttClient.subscribe(`dabble/${currentRoomId}/host-ice`);
+            // Tell host we are here
+            mqttClient.publish(`dabble/${currentRoomId}/join-req`, JSON.stringify({ hello: 'world' }));
         });
 
         mqttClient.on('message', async (topic, message) => {
             try {
                 const data = JSON.parse(message.toString());
-                if (data.type === 'offer') {
-                    addChatMessage("sys", "Offer received! Generating return route...");
-                    initWebRTC(false);
+                
+                if (topic.endsWith('/offer')) {
+                    addChatMessage("sys", "Offer received! Securing connection...");
+                    createPeerConnection(false);
 
                     pc.ondatachannel = (e) => {
                         dataConn = e.channel;
@@ -272,38 +270,29 @@
                     };
 
                     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-                    const audioTrack = localStream.getAudioTracks()[0];
-                    
-                    pc.getTransceivers().forEach(t => {
-                        if (t.receiver.track.kind === 'audio' && audioTrack) {
-                            t.direction = 'sendrecv';
-                            t.sender.replaceTrack(audioTrack);
-                        } else if (t.receiver.track.kind === 'video') {
-                            t.direction = 'sendrecv';
-                        }
-                    });
                     
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
-                    
-                    // Wait for all ICE candidates to bundle, then send once
-                    await waitForIce(pc);
-                    mqttClient.publish(`dabble/${currentRoomId}/host`, JSON.stringify({ type: 'answer', answer: pc.localDescription }));
+                    mqttClient.publish(`dabble/${currentRoomId}/answer`, JSON.stringify({ answer: pc.localDescription }));
+                
+                } else if (topic.endsWith('/host-ice')) {
+                    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+                        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.error(e));
+                    }
                 }
             } catch (err) { console.error(err); }
         });
     }
+
+    // --- UTILITIES, CHAT, & SCREEN SHARE BELOW ---
 
     async function applySenderOptimizations(peerConnection) {
         peerConnection.getSenders().forEach(async sender => {
             if (sender.track) {
                 try {
                     const params = sender.getParameters();
-                    if (sender.track.kind === 'audio') {
-                        params.priority = 'high';
-                    } else if (sender.track.kind === 'video') {
-                        params.degradationPreference = 'maintain-framerate'; 
-                    }
+                    if (sender.track.kind === 'audio') params.priority = 'high';
+                    else if (sender.track.kind === 'video') params.degradationPreference = 'maintain-framerate'; 
                     await sender.setParameters(params);
                 } catch(e) { }
             }
@@ -332,7 +321,6 @@
     async function changeDevice() {
         const audioId = document.getElementById('audioSource').value;
         if (localStream) localStream.getTracks().forEach(track => track.stop());
-        
         try {
             localStream = await navigator.mediaDevices.getUserMedia({
                 audio: audioId ? { deviceId: { exact: audioId }, ...audioConstraints.audio } : audioConstraints
@@ -345,7 +333,6 @@
                 audioTransceiver.sender.replaceTrack(localStream.getAudioTracks()[0]);
             }
         }
-        
         isAudioMuted = false;
         document.getElementById('micBtn').innerText = "🎤 Mute"; document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
     }
@@ -361,25 +348,17 @@
     async function toggleScreenShare() {
         if (!screenStream) {
             try {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ 
-                    video: { width: 3840, height: 2160, frameRate: 60 }, 
-                    audio: false 
-                });
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 3840, height: 2160, frameRate: 60 }, audio: false });
                 const videoTrack = screenStream.getVideoTracks()[0];
                 
                 if (pc) {
-                    const videoTransceiver = pc.getTransceivers().find(t => 
-                        (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
-                        (t.sender && t.sender.track && t.sender.track.kind === 'video')
-                    );
-                    
+                    const videoTransceiver = pc.getTransceivers().find(t => (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || (t.sender && t.sender.track && t.sender.track.kind === 'video'));
                     if (videoTransceiver) {
-                        const sender = videoTransceiver.sender;
-                        await sender.replaceTrack(videoTrack);
+                        await videoTransceiver.sender.replaceTrack(videoTrack);
                         try {
-                            const params = sender.getParameters();
+                            const params = videoTransceiver.sender.getParameters();
                             params.degradationPreference = 'maintain-framerate'; 
-                            await sender.setParameters(params);
+                            await videoTransceiver.sender.setParameters(params);
                         } catch (e) {}
                     }
                 }
@@ -388,19 +367,14 @@
                 document.getElementById('localVideo').srcObject = screenStream;
                 document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; 
                 document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
-                
                 videoTrack.onended = () => { if(screenStream) toggleScreenShare(); };
                 
             } catch (e) { addChatMessage("sys", `Screen share failed: ${e.message}`); }
         } else {
             if (pc) {
-                const videoTransceiver = pc.getTransceivers().find(t => 
-                    (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || 
-                    (t.sender && t.sender.track && t.sender.track.kind === 'video')
-                );
+                const videoTransceiver = pc.getTransceivers().find(t => (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || (t.sender && t.sender.track && t.sender.track.kind === 'video'));
                 if (videoTransceiver) videoTransceiver.sender.replaceTrack(null);
             }
-            
             document.getElementById('localVideo').srcObject = null;
             document.getElementById('localPlaceholder').style.display = 'block';
             screenStream.getTracks().forEach(t => t.stop()); screenStream = null;
@@ -410,7 +384,6 @@
     }
 
     function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
-    
     async function togglePiP(id) {
         const video = document.getElementById(id);
         if (document.pictureInPictureElement) await document.exitPictureInPicture();
