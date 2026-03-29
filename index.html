@@ -2,127 +2,116 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Dabble | Simple P2P</title>
+    <title>Simple P2P</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 50px; }
-        .box { background: #222; padding: 20px; border-radius: 15px; display: inline-block; border: 1px solid #333; }
-        video { width: 400px; aspect-ratio: 16/9; background: #000; border-radius: 10px; margin: 10px; }
-        input { padding: 10px; border-radius: 5px; border: 1px solid #444; background: #000; color: white; width: 150px; text-align: center; }
-        button { padding: 10px 20px; cursor: pointer; border-radius: 5px; border: none; background: #6366f1; color: white; font-weight: bold; }
-        #stopBtn { background: #ef4444; display: none; }
-        .status { margin: 15px; color: #10b981; font-family: monospace; }
+        body { font-family: sans-serif; background: #121212; color: white; text-align: center; padding: 20px; }
+        .video-container { display: flex; gap: 20px; justify-content: center; margin-top: 20px; }
+        video { width: 45%; background: #000; border-radius: 10px; border: 2px solid #333; }
+        .controls { margin-bottom: 30px; background: #1e1e1e; padding: 20px; border-radius: 15px; display: inline-block; }
+        input { padding: 10px; border-radius: 5px; border: none; }
+        button { padding: 10px 20px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; background: #6366f1; color: white; margin: 5px; }
+        button:disabled { background: #444; }
+        .status { color: #10b981; margin: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <div class="box">
-        <h3>1. Pick Your ID (e.g. 1)</h3>
-        <input type="text" id="myIdInput" placeholder="My ID">
-        <button onclick="initPeer()">Set ID</button>
-        
-        <div class="status" id="status">Status: Offline</div>
-
-        <h3>2. Connect to Peer</h3>
-        <input type="text" id="remoteIdInput" placeholder="Peer's ID">
-        <button onclick="connect()">Call Peer</button>
-        <br><br>
-        <button id="startBtn" onclick="startShare()" disabled>📺 Start Screen Share</button>
-        <button id="stopBtn" onclick="stopShare()">🛑 Stop Sharing</button>
+    <h2>Dabble Simple P2P</h2>
+    
+    <div class="controls">
+        <div id="setup-id">
+            <p>Your ID: <strong id="my-id">...</strong></p>
+            <input type="text" id="remote-id" placeholder="Enter Peer ID">
+            <button onclick="connectToPeer()">Connect</button>
+        </div>
+        <div id="status" class="status">Waiting for connection...</div>
+        <button id="screen-btn" onclick="toggleScreen()" disabled>📺 Share Screen</button>
     </div>
 
-    <div style="margin-top: 20px;">
-        <video id="localVideo" autoplay muted playsinline></video>
-        <video id="remoteVideo" autoplay playsinline></video>
+    <div class="video-container">
+        <div><p>Local</p><video id="localVideo" autoplay muted playsinline></video></div>
+        <div><p>Remote</p><video id="remoteVideo" autoplay playsinline></video></div>
     </div>
 
 <script>
-    let peer, localStream, currentCall;
+    let peer = new Peer();
+    let localStream;
+    let screenStream;
+    let currentCall;
 
-    // Initialize the Peer with a custom ID (can be 1 digit)
-    function initPeer() {
-        const myId = document.getElementById('myIdInput').value;
-        if (!myId) return alert("Enter an ID first");
+    // 1. Get Microphone on startup
+    navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(stream => {
+        localStream = stream;
+        document.getElementById('status').innerText = "Mic Ready. Ready to connect.";
+    });
 
-        peer = new Peer(myId);
+    // 2. PeerJS Setup
+    peer.on('open', id => { document.getElementById('my-id').innerText = id; });
+
+    // Handle Incoming Calls
+    peer.on('call', call => {
+        currentCall = call;
+        call.answer(localStream);
+        handleCall(call);
+    });
+
+    // 3. Connect to a Peer
+    function connectToPeer() {
+        const id = document.getElementById('remote-id').value;
+        if (!id) return alert("Enter ID");
         
-        peer.on('open', id => {
-            document.getElementById('status').innerText = `Status: Online as ID [${id}]`;
-        });
-
-        // Handle receiving a call
-        peer.on('call', call => {
-            currentCall = call;
-            setupMedia().then(() => {
-                call.answer(localStream);
-                setupCallHandlers(call);
-            });
-        });
-
-        peer.on('error', err => {
-            alert("Error: " + err.type);
-            console.error(err);
-        });
+        currentCall = peer.call(id, localStream);
+        handleCall(currentCall);
     }
 
-    async function setupMedia() {
-        if (!localStream) {
-            // Get Mic only initially
-            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        }
-    }
-
-    function connect() {
-        const remoteId = document.getElementById('remoteIdInput').value;
-        setupMedia().then(() => {
-            const call = peer.call(remoteId, localStream);
-            currentCall = call;
-            setupCallHandlers(call);
-        });
-    }
-
-    function setupCallHandlers(call) {
-        document.getElementById('status').innerText = "Status: Connected!";
-        document.getElementById('startBtn').disabled = false;
+    function handleCall(call) {
+        document.getElementById('status').innerText = "Connected!";
+        document.getElementById('screen-btn').disabled = false;
 
         call.on('stream', remoteStream => {
-            document.getElementById('remoteVideo').srcObject = remoteStream;
+            const remoteVideo = document.getElementById('remoteVideo');
+            remoteVideo.srcObject = remoteStream;
+        });
+
+        call.on('close', () => {
+            alert("Peer disconnected");
+            location.reload();
         });
     }
 
-    async function startShare() {
-        try {
-            const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    // 4. Toggle Screen Share (The "Simple" way)
+    async function toggleScreen() {
+        if (!screenStream) {
+            // Start Sharing
+            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
             const videoTrack = screenStream.getVideoTracks()[0];
             
-            // Replace or Add the video track in the peer connection
+            // Add video track to the existing call
             const sender = currentCall.peerConnection.getSenders().find(s => s.track?.kind === 'video');
             
             if (sender) {
                 sender.replaceTrack(videoTrack);
             } else {
+                // If no video sender exists, we add it
                 currentCall.peerConnection.addTrack(videoTrack, localStream);
             }
 
             document.getElementById('localVideo').srcObject = screenStream;
-            document.getElementById('startBtn').style.display = "none";
-            document.getElementById('stopBtn').style.display = "inline-block";
+            document.getElementById('screen-btn').innerText = "🛑 Stop Sharing";
 
-            videoTrack.onended = stopShare;
-        } catch (e) { console.error(e); }
-    }
-
-    function stopShare() {
-        const videoTrack = document.getElementById('localVideo').srcObject?.getTracks()[0];
-        if (videoTrack) videoTrack.stop();
-        
-        document.getElementById('localVideo').srcObject = null;
-        document.getElementById('startBtn').style.display = "inline-block";
-        document.getElementById('stopBtn').style.display = "none";
-        
-        // This will stop sending video but keep audio alive
-        const sender = currentCall.peerConnection.getSenders().find(s => s.track?.kind === 'video');
-        if (sender) currentCall.peerConnection.removeTrack(sender);
+            videoTrack.onended = () => toggleScreen();
+        } else {
+            // Stop Sharing
+            screenStream.getTracks().forEach(t => t.stop());
+            screenStream = null;
+            
+            const sender = currentCall.peerConnection.getSenders().find(s => s.track?.kind === 'video');
+            if (sender) currentCall.peerConnection.removeTrack(sender);
+            
+            document.getElementById('localVideo').srcObject = null;
+            document.getElementById('screen-btn').innerText = "📺 Share Screen";
+        }
     }
 </script>
 </body>
