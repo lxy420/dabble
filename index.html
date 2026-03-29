@@ -2,418 +2,128 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Dabble | Ultra P2P</title>
+    <title>Dabble | Simple P2P</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        :root { --bg-main: #ff1113; --bg-card: #1a1d21; --accent: #6366f1; --text-main: #f3f4f6; --success: #10b981; --danger: #ef4444; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg-main); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
-        .app-container { max-width: 1200px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
-        
-        .video-card { position: relative; background: #000; border-radius: 20px; overflow: hidden; border: 1px solid #2d3139; margin-bottom: 20px; min-height: 200px; display: flex; align-items: center; justify-content: center; }
-        video { width: 100%; aspect-ratio: 16/9; display: block; object-fit: cover; }
-        .panel { background: var(--bg-card); padding: 24px; border-radius: 20px; border: 1px solid #2d3139; position: relative; }
-        
-        input, select { width: 100%; padding: 12px; background: #0b0d0f; border: 1px solid #2d3139; border-radius: 10px; color: white; outline: none; box-sizing: border-box; font-family: inherit; font-size: 14px; margin-bottom: 10px;}
-        input:focus, select:focus { border-color: var(--accent); }
-        button { padding: 12px 20px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 12px; font-weight: 600; transition: 0.2s; width: 100%; }
-        button:hover { opacity: 0.9; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-secondary { background: #2d3139; border: 1px solid #3f444e; }
-        .btn-success { background: var(--success); }
-        .btn-danger { background: var(--danger); }
-        .cancel-btn { background: var(--danger); padding: 6px 12px; font-size: 12px; width: auto; border-radius: 8px; margin-left: 10px;}
-        .cancel-btn:hover { background: #dc2626; }
-        
-        #settingsModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
-        .modal-content { background: var(--bg-card); padding: 30px; border-radius: 20px; border: 1px solid #2d3139; width: 90%; max-width: 400px; }
-        .modal-content h3 { margin-top: 0; margin-bottom: 20px; color: white; }
-        .modal-content label { display: block; margin-bottom: 5px; font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; }
-        
-        #chatBox { height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 2px dashed transparent; border-radius: 12px; transition: 0.2s; }
-        #chatBox.dragover { border-color: var(--accent); background: rgba(99, 102, 241, 0.05); }
-        .msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; font-size: 14px; word-wrap: break-word; }
-        .msg.me { background: var(--accent); align-self: flex-end; }
-        .msg.friend { background: #2d3139; align-self: flex-start; }
-        .msg.sys { font-size: 11px; color: #9ca3af; align-self: center; text-transform: uppercase; text-align: center; }
-        .msg a { color: #818cf8; text-decoration: none; font-weight: bold; }
-        .msg a:hover { text-decoration: underline; }
-        
-        #fileTransferUI { display: none; padding: 12px; background: #0b0d0f; border-radius: 10px; margin-bottom: 10px; border: 1px solid #2d3139; }
-        #fileTransferHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        #fileTransferLabel { font-size: 12px; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
-        progress { width: 100%; height: 8px; border-radius: 4px; accent-color: var(--accent); }
-        progress::-webkit-progress-bar { background-color: #2d3139; border-radius: 4px; }
-        progress::-webkit-progress-value { background-color: var(--accent); border-radius: 4px; }
-        
-        .video-overlay { position: absolute; bottom: 10px; left: 10px; z-index: 5; display: flex; gap: 8px; flex-wrap: wrap; }
-        .top-right-overlay { position: absolute; top: 10px; right: 10px; z-index: 5; }
-        #myIdDisplay { margin-top: 15px; font-size: 14px; color: #9ca3af; text-align: center; word-break: break-all; background: #0b0d0f; padding: 10px; border-radius: 8px; display: none; border: 1px dashed var(--accent); }
-        #roomCode { letter-spacing: 4px; }
-        .placeholder-text { position: absolute; color: #4b5563; font-size: 14px; pointer-events: none; z-index: 1; }
+        body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 50px; }
+        .box { background: #222; padding: 20px; border-radius: 15px; display: inline-block; border: 1px solid #333; }
+        video { width: 400px; aspect-ratio: 16/9; background: #000; border-radius: 10px; margin: 10px; }
+        input { padding: 10px; border-radius: 5px; border: 1px solid #444; background: #000; color: white; width: 150px; text-align: center; }
+        button { padding: 10px 20px; cursor: pointer; border-radius: 5px; border: none; background: #6366f1; color: white; font-weight: bold; }
+        #stopBtn { background: #ef4444; display: none; }
+        .status { margin: 15px; color: #10b981; font-family: monospace; }
     </style>
 </head>
 <body>
 
-<audio id="localAudio" autoplay muted></audio>
-<audio id="remoteAudio" autoplay></audio>
+    <div class="box">
+        <h3>1. Pick Your ID (e.g. 1)</h3>
+        <input type="text" id="myIdInput" placeholder="My ID">
+        <button onclick="initPeer()">Set ID</button>
+        
+        <div class="status" id="status">Status: Offline</div>
 
-<div id="settingsModal">
-    <div class="modal-content">
-        <h3>⚙️ Audio Settings</h3>
-        <label>Microphone</label>
-        <select id="audioSource" onchange="changeDevice()"></select>
-        <button class="btn-secondary" style="margin-top: 20px;" onclick="toggleSettings()">Done</button>
-    </div>
-</div>
-
-<div class="app-container">
-    <div class="video-wall">
-        <div class="video-card">
-            <span class="placeholder-text" id="localPlaceholder">Voice Active. Click Screen Share to transmit video.</span>
-            <video id="localVideo" autoplay playsinline muted style="z-index: 2;"></video>
-            <div class="top-right-overlay">
-                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleSettings()">⚙️</button>
-            </div>
-            <div class="video-overlay">
-                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleAudio()" id="micBtn">🎤 Mute</button>
-                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="toggleScreenShare()" id="shareBtn" disabled>📺 Screen Share</button>
-            </div>
-        </div>
-        <div class="video-card">
-            <span class="placeholder-text" id="remotePlaceholder">Waiting for peer's screen...</span>
-            <video id="remoteVideo" autoplay playsinline style="z-index: 2;"></video>
-            <div class="video-overlay">
-                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="togglePiP('remoteVideo')" id="pipBtn">🗗 Pop Out</button>
-                <button class="btn-secondary" style="width:auto; padding: 8px 12px; font-size: 12px;" onclick="goFullscreen('remoteVideo')">⛶ Fullscreen</button>
-            </div>
-        </div>
+        <h3>2. Connect to Peer</h3>
+        <input type="text" id="remoteIdInput" placeholder="Peer's ID">
+        <button onclick="connect()">Call Peer</button>
+        <br><br>
+        <button id="startBtn" onclick="startShare()" disabled>📺 Start Screen Share</button>
+        <button id="stopBtn" onclick="stopShare()">🛑 Stop Sharing</button>
     </div>
 
-    <div class="sidebar">
-        <div class="panel">
-            <input type="text" id="peerIdInput" placeholder="Enter a 6-digit Room ID..." style="text-align: center; font-family: monospace; letter-spacing: 2px;">
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <button onclick="hostRoom()" id="hostBtn">1. Create Room</button>
-                <button class="btn-secondary" onclick="joinRoom()" id="joinBtn">2. Join Room</button>
-            </div>
-            <div id="myIdDisplay">
-                Your Room ID:<br>
-                <strong id="roomCode" style="font-size:24px; color:white; display:block; margin-top:5px; user-select:all;">Loading...</strong>
-            </div>
-        </div>
-
-        <div class="panel" style="margin-top:20px;">
-            <div id="fileTransferUI">
-                <div id="fileTransferHeader">
-                    <div id="fileTransferLabel">Transferring...</div>
-                    <button class="cancel-btn" onclick="cancelTransfer()">Cancel</button>
-                </div>
-                <progress id="fileProgress" value="0" max="100"></progress>
-            </div>
-            <div id="chatBox"><div class="msg sys">Welcome to Dabble. Ready to connect.</div></div>
-            <input type="text" id="chatInput" placeholder="Type a message..." style="margin-bottom:0; text-align:left; font-family:inherit;">
-        </div>
+    <div style="margin-top: 20px;">
+        <video id="localVideo" autoplay muted playsinline></video>
+        <video id="remoteVideo" autoplay playsinline></video>
     </div>
-</div>
 
 <script>
-    let localStream = new MediaStream(), screenStream;
-    let myPeer = null, connectedPeerId = null;
-    let dataConn = null, voiceCall = null, screenCall = null;
-    let isAudioMuted = false;
+    let peer, localStream, currentCall;
 
-    // File transfer state
-    const CHUNK_SIZE = 65536; 
-    let fileQueue = [], incomingFileInfo = null, incomingFileData = [], receivedSize = 0, isSendingFile = false, cancelTransferFlag = false; 
-    let unreadCount = 0; const originalTitle = "Dabble | Ultra P2P";
+    // Initialize the Peer with a custom ID (can be 1 digit)
+    function initPeer() {
+        const myId = document.getElementById('myIdInput').value;
+        if (!myId) return alert("Enter an ID first");
 
-    const audioConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false };
+        peer = new Peer(myId);
+        
+        peer.on('open', id => {
+            document.getElementById('status').innerText = `Status: Online as ID [${id}]`;
+        });
 
-    async function initMedia() {
+        // Handle receiving a call
+        peer.on('call', call => {
+            currentCall = call;
+            setupMedia().then(() => {
+                call.answer(localStream);
+                setupCallHandlers(call);
+            });
+        });
+
+        peer.on('error', err => {
+            alert("Error: " + err.type);
+            console.error(err);
+        });
+    }
+
+    async function setupMedia() {
+        if (!localStream) {
+            // Get Mic only initially
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        }
+    }
+
+    function connect() {
+        const remoteId = document.getElementById('remoteIdInput').value;
+        setupMedia().then(() => {
+            const call = peer.call(remoteId, localStream);
+            currentCall = call;
+            setupCallHandlers(call);
+        });
+    }
+
+    function setupCallHandlers(call) {
+        document.getElementById('status').innerText = "Status: Connected!";
+        document.getElementById('startBtn').disabled = false;
+
+        call.on('stream', remoteStream => {
+            document.getElementById('remoteVideo').srcObject = remoteStream;
+        });
+    }
+
+    async function startShare() {
         try {
-            localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
-            document.getElementById('localAudio').srcObject = localStream;
-            loadDevices();
-        } catch (e) { 
-            addChatMessage("sys", "Microphone not detected. You can still join, watch, and chat."); 
-        }
-        setupDragAndDrop();
-        requestNotificationPermission();
-    }
-
-    // ==========================================
-    // PEERJS SIGNALING & CONNECTION LOGIC
-    // ==========================================
-
-    function setupPeerListeners() {
-        // Handle incoming data connection (Chat/Files)
-        myPeer.on('connection', conn => {
-            dataConn = conn;
-            connectedPeerId = conn.peer;
-            setupDataHandlers();
-            addChatMessage("sys", "Peer joined! Connection is active.");
-            document.getElementById('myIdDisplay').style.display = 'none';
-            document.getElementById('shareBtn').disabled = false;
-        });
-
-        // Handle incoming media calls (Voice or Screen)
-        myPeer.on('call', call => {
-            if (call.metadata && call.metadata.type === 'screen') {
-                // Tunnel 2: Incoming Screen Share
-                call.answer(); // We don't send anything back on the screen tunnel
-                call.on('stream', remoteScreenStream => {
-                    document.getElementById('remoteVideo').srcObject = remoteScreenStream;
-                    document.getElementById('remotePlaceholder').style.display = 'none';
-                });
-                call.on('close', () => {
-                    document.getElementById('remoteVideo').srcObject = null;
-                    document.getElementById('remotePlaceholder').style.display = 'block';
-                });
+            const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            const videoTrack = screenStream.getVideoTracks()[0];
+            
+            // Replace or Add the video track in the peer connection
+            const sender = currentCall.peerConnection.getSenders().find(s => s.track?.kind === 'video');
+            
+            if (sender) {
+                sender.replaceTrack(videoTrack);
             } else {
-                // Tunnel 1: Incoming Voice Call
-                call.answer(localStream); // Send our mic back
-                call.on('stream', remoteMicStream => {
-                    document.getElementById('remoteAudio').srcObject = remoteMicStream;
-                });
+                currentCall.peerConnection.addTrack(videoTrack, localStream);
             }
-        });
+
+            document.getElementById('localVideo').srcObject = screenStream;
+            document.getElementById('startBtn').style.display = "none";
+            document.getElementById('stopBtn').style.display = "inline-block";
+
+            videoTrack.onended = stopShare;
+        } catch (e) { console.error(e); }
+    }
+
+    function stopShare() {
+        const videoTrack = document.getElementById('localVideo').srcObject?.getTracks()[0];
+        if (videoTrack) videoTrack.stop();
         
-        myPeer.on('disconnected', () => addChatMessage("sys", "Connection lost."));
-        myPeer.on('error', err => addChatMessage("sys", "Network Error: " + err.type));
-    }
-
-    function hostRoom() {
-        const roomId = Math.floor(100000 + Math.random() * 900000).toString();
-        const peerId = 'dabble-' + roomId;
+        document.getElementById('localVideo').srcObject = null;
+        document.getElementById('startBtn').style.display = "inline-block";
+        document.getElementById('stopBtn').style.display = "none";
         
-        document.getElementById('roomCode').innerText = roomId;
-        document.getElementById('myIdDisplay').style.display = 'block';
-        addChatMessage("sys", "Initializing server...");
-
-        myPeer = new Peer(peerId, { debug: 2 });
-        
-        myPeer.on('open', id => {
-            addChatMessage("sys", "Room created. Waiting for peer...");
-            document.getElementById('hostBtn').disabled = true;
-            document.getElementById('joinBtn').disabled = true;
-            setupPeerListeners();
-        });
+        // This will stop sending video but keep audio alive
+        const sender = currentCall.peerConnection.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) currentCall.peerConnection.removeTrack(sender);
     }
-
-    function joinRoom() {
-        const roomId = document.getElementById('peerIdInput').value.trim();
-        if(!roomId) return alert("Please enter the Room ID first!");
-        
-        connectedPeerId = 'dabble-' + roomId;
-        addChatMessage("sys", "Connecting to host...");
-
-        // Generate a random ID for the joiner
-        myPeer = new Peer({ debug: 2 });
-
-        myPeer.on('open', id => {
-            document.getElementById('hostBtn').disabled = true;
-            document.getElementById('joinBtn').disabled = true;
-            
-            // 1. Establish Data Tunnel
-            dataConn = myPeer.connect(connectedPeerId);
-            setupDataHandlers();
-            
-            dataConn.on('open', () => {
-                addChatMessage("sys", "Connected! Voice is active.");
-                document.getElementById('shareBtn').disabled = false;
-            });
-
-            // 2. Establish Voice Tunnel
-            voiceCall = myPeer.call(connectedPeerId, localStream, { metadata: { type: 'voice' } });
-            voiceCall.on('stream', remoteMicStream => {
-                document.getElementById('remoteAudio').srcObject = remoteMicStream;
-            });
-
-            setupPeerListeners(); // Listen in case host shares screen
-        });
-    }
-
-    // ==========================================
-    // DUAL-TUNNEL SCREEN SHARE
-    // ==========================================
-
-    async function toggleScreenShare() {
-        if (!screenStream) {
-            try {
-                // Request HQ screen, audio false to preserve bandwidth for the voice tunnel
-                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1920, height: 1080, frameRate: 30 }, audio: false });
-                
-                document.getElementById('localPlaceholder').style.display = 'none';
-                document.getElementById('localVideo').srcObject = screenStream;
-                document.getElementById('shareBtn').innerText = "🛑 Stop Sharing"; 
-                document.getElementById('shareBtn').classList.replace('btn-secondary', 'btn-success');
-                
-                // Blast the screen stream over a totally separate connection
-                if (myPeer && connectedPeerId) {
-                    screenCall = myPeer.call(connectedPeerId, screenStream, { metadata: { type: 'screen' } });
-                }
-                
-                // Handle user clicking "Stop sharing" in browser UI
-                screenStream.getVideoTracks()[0].onended = () => toggleScreenShare();
-                
-            } catch (e) { addChatMessage("sys", `Screen share canceled or failed.`); }
-        } else {
-            screenStream.getTracks().forEach(t => t.stop());
-            screenStream = null;
-            document.getElementById('localVideo').srcObject = null;
-            document.getElementById('localPlaceholder').style.display = 'block';
-            document.getElementById('shareBtn').innerText = "📺 Screen Share"; 
-            document.getElementById('shareBtn').classList.replace('btn-success', 'btn-secondary');
-            
-            // Close the screen tunnel without touching the voice tunnel
-            if (screenCall) screenCall.close();
-        }
-    }
-
-
-    // ==========================================
-    // UTILITIES, CHAT & FILE TRANSFERS
-    // ==========================================
-
-    function setupDataHandlers() {
-        if (!dataConn) return;
-        dataConn.on('data', data => {
-            if (typeof data === 'string') {
-                const d = JSON.parse(data);
-                if (d.type === 'chat') { addChatMessage("friend", d.text); triggerNotification('Message', d.text); } 
-                else if (d.type === 'file-start') {
-                    incomingFileInfo = d; incomingFileData = []; receivedSize = 0;
-                    document.getElementById('fileTransferUI').style.display = 'block';
-                    document.getElementById('fileTransferLabel').innerText = `Receiving: ${d.name}`;
-                    document.getElementById('fileProgress').max = d.size; document.getElementById('fileProgress').value = 0;
-                    triggerNotification('File Transfer', `Receiving ${d.name}`); 
-                } else if (d.type === 'file-cancel') { addChatMessage("sys", "Sender canceled transfer."); resetFileTransferUI(); } 
-                else if (d.type === 'file-cancel-request') { cancelTransferFlag = true; addChatMessage("sys", "Recipient canceled download."); }
-            } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
-                incomingFileData.push(data); receivedSize += data.byteLength; document.getElementById('fileProgress').value = receivedSize;
-                if (receivedSize >= incomingFileInfo.size) {
-                    const blob = new Blob(incomingFileData); const url = URL.createObjectURL(blob);
-                    addChatMessage("friend", `📁 <a href="${url}" download="${incomingFileInfo.name}">Download ${incomingFileInfo.name}</a>`);
-                    resetFileTransferUI();
-                }
-            }
-        });
-    }
-
-    function sendMessage() {
-        const i = document.getElementById('chatInput');
-        if (dataConn && dataConn.open && i.value.trim() !== "") {
-            dataConn.send(JSON.stringify({ type: 'chat', text: i.value })); 
-            addChatMessage("me", i.value); 
-            i.value = "";
-        } else if (!dataConn || !dataConn.open) {
-            addChatMessage("sys", "You must be connected to send messages.");
-        }
-    }
-    document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
-
-    // File Drag & Drop Queue
-    function setupDragAndDrop() {
-        const chatBox = document.getElementById('chatBox');
-        chatBox.addEventListener('dragover', e => { e.preventDefault(); chatBox.classList.add('dragover'); });
-        chatBox.addEventListener('dragleave', e => { e.preventDefault(); chatBox.classList.remove('dragover'); });
-        chatBox.addEventListener('drop', e => {
-            e.preventDefault(); chatBox.classList.remove('dragover');
-            if (!dataConn || !dataConn.open) return addChatMessage("sys", "Connect to a peer to send files!");
-            if (e.dataTransfer.files.length > 0) {
-                for (let i = 0; i < e.dataTransfer.files.length; i++) fileQueue.push(e.dataTransfer.files[i]);
-                if (e.dataTransfer.files.length > 1) addChatMessage("sys", `Queued ${e.dataTransfer.files.length} files.`);
-                if (!isSendingFile && !incomingFileInfo) processFileQueue();
-            }
-        });
-    }
-
-    function processFileQueue() {
-        if (fileQueue.length === 0) {
-            isSendingFile = false; setTimeout(() => { if(!isSendingFile) document.getElementById('fileTransferUI').style.display = 'none'; }, 1000); return;
-        }
-        let file = fileQueue.shift(); isSendingFile = true; cancelTransferFlag = false;
-        document.getElementById('fileTransferUI').style.display = 'block';
-        let labelText = `Sending: ${file.name}`; if (fileQueue.length > 0) labelText += ` (+${fileQueue.length} in queue)`;
-        document.getElementById('fileTransferLabel').innerText = labelText;
-        const progress = document.getElementById('fileProgress'); progress.max = file.size; progress.value = 0;
-        
-        dataConn.send(JSON.stringify({ type: 'file-start', name: file.name, size: file.size }));
-        let offset = 0;
-        const readNextChunk = () => {
-            if (cancelTransferFlag) { dataConn.send(JSON.stringify({ type: 'file-cancel' })); fileQueue = []; resetFileTransferUI(); return; }
-            const slice = file.slice(offset, offset + CHUNK_SIZE); const reader = new FileReader();
-            reader.onload = e => {
-                dataConn.send(e.target.result); offset += e.target.result.byteLength; progress.value = offset;
-                if (offset < file.size) { setTimeout(readNextChunk, 10); } // Adjusted timeout for PeerJS
-                else { addChatMessage("me", `Sent file: ${file.name}`); processFileQueue(); }
-            }; reader.readAsArrayBuffer(slice);
-        }; readNextChunk();
-    }
-
-    function cancelTransfer() {
-        if (isSendingFile) { cancelTransferFlag = true; fileQueue = []; addChatMessage("sys", "Upload canceled."); } 
-        else if (incomingFileInfo) { dataConn.send(JSON.stringify({ type: 'file-cancel-request' })); addChatMessage("sys", "Download canceled."); resetFileTransferUI(); }
-    }
-    function resetFileTransferUI() { document.getElementById('fileTransferUI').style.display = 'none'; incomingFileInfo = null; incomingFileData = []; receivedSize = 0; isSendingFile = false; cancelTransferFlag = false; }
-    
-    function addChatMessage(s, m) { const b = document.getElementById('chatBox'); b.innerHTML += `<div class="msg ${s}">${m}</div>`; b.scrollTop = b.scrollHeight; }
-
-    // Device Management
-    async function loadDevices() {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioSelect = document.getElementById('audioSource');
-        audioSelect.innerHTML = ''; 
-        devices.forEach(device => {
-            if (device.kind === 'audioinput') { 
-                const option = document.createElement('option');
-                option.value = device.deviceId; option.text = device.label || `Microphone ${audioSelect.length + 1}`; 
-                audioSelect.appendChild(option); 
-            } 
-        });
-    }
-
-    async function changeDevice() {
-        const audioId = document.getElementById('audioSource').value;
-        if (localStream) localStream.getTracks().forEach(track => track.stop());
-        try { localStream = await navigator.mediaDevices.getUserMedia({ audio: audioId ? { deviceId: { exact: audioId }, ...audioConstraints.audio } : audioConstraints }); } catch(e) {}
-        document.getElementById('localAudio').srcObject = localStream;
-        
-        // If actively connected, replace the track in the voice call
-        if (voiceCall && voiceCall.peerConnection) {
-            const audioSender = voiceCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
-            if (audioSender && localStream.getAudioTracks()[0]) audioSender.replaceTrack(localStream.getAudioTracks()[0]);
-        }
-        isAudioMuted = false; document.getElementById('micBtn').innerText = "🎤 Mute"; document.getElementById('micBtn').classList.replace('btn-danger', 'btn-secondary');
-    }
-
-    function toggleAudio() {
-        if (localStream && localStream.getAudioTracks().length > 0) {
-            isAudioMuted = !isAudioMuted; localStream.getAudioTracks()[0].enabled = !isAudioMuted;
-            const btn = document.getElementById('micBtn'); btn.innerText = isAudioMuted ? "🔇 Unmute" : "🎤 Mute";
-            btn.classList.toggle('btn-danger', isAudioMuted); btn.classList.toggle('btn-secondary', !isAudioMuted);
-        }
-    }
-
-    function toggleSettings() { const modal = document.getElementById('settingsModal'); modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex'; }
-    function goFullscreen(id) { document.getElementById(id).requestFullscreen(); }
-    async function togglePiP(id) {
-        const video = document.getElementById(id);
-        if (document.pictureInPictureElement) await document.exitPictureInPicture();
-        else { if (document.pictureInPictureEnabled) { try { await video.requestPictureInPicture(); } catch (err) {} } }
-    }
-    document.getElementById('remoteVideo').addEventListener('enterpictureinpicture', () => { const btn = document.getElementById('pipBtn'); if(btn) { btn.innerText = "🗗 Bring Back"; btn.classList.replace('btn-secondary', 'btn-success'); } });
-    document.getElementById('remoteVideo').addEventListener('leavepictureinpicture', () => { const btn = document.getElementById('pipBtn'); if(btn) { btn.innerText = "🗗 Pop Out"; btn.classList.replace('btn-success', 'btn-secondary'); } });
-    function requestNotificationPermission() { if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") Notification.requestPermission(); }
-    function triggerNotification(title, body) {
-        if (document.hidden) {
-            unreadCount++; document.title = `(${unreadCount}) New ${title}!`;
-            if ("Notification" in window && Notification.permission === "granted") new Notification(`Dabble`, { body: body });
-        }
-    }
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { unreadCount = 0; document.title = originalTitle; } });
-
-    initMedia();
 </script>
 </body>
 </html>
