@@ -84,8 +84,14 @@ export function createRoom(roomCode, displayName) {
     })
 
     nameAction.onMessage = (name, {peerId}) => {
-      if (!names.has(peerId)) markPeerJoined(peerId, name)
-      else names.set(peerId, name)
+      if (!names.has(peerId)) {
+        markPeerJoined(peerId, name)
+      } else if (names.get(peerId) !== name) {
+        // Real name arrived after the 'gost' fallback (or peer renamed):
+        // re-emit onPeerJoined so the UI updates the display name.
+        names.set(peerId, name)
+        api.onPeerJoined?.({peerId, name})
+      }
     }
 
     chatAction.onMessage = (payload, {peerId}) => {
@@ -119,6 +125,7 @@ export function createRoom(roomCode, displayName) {
         clearTimeout(timer)
         joinTimers.delete(peerId)
       }
+      fileTransfer?.clearPeer(peerId)
       api.onPeerLeft?.({peerId})
       applyQualityToPeers(room.getPeers, peerCount())
     }
@@ -127,11 +134,17 @@ export function createRoom(roomCode, displayName) {
       const kind = metadata?.kind || 'camera'
       api.onPeerStream?.({peerId, stream, kind})
       // trystero has no built-in "stream ended" signal; infer it from the
-      // remote track(s) ending (peer stopped/removed the stream).
+      // remote track(s) ending (peer stopped/removed the stream). Emit once
+      // per (peerId, stream), not once per track.
+      let endedEmitted = false
       stream.getTracks().forEach(track => {
         track.addEventListener(
           'ended',
-          () => api.onPeerStreamEnded?.({peerId, kind}),
+          () => {
+            if (endedEmitted) return
+            endedEmitted = true
+            api.onPeerStreamEnded?.({peerId, kind})
+          },
           {once: true}
         )
       })

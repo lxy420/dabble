@@ -21,15 +21,24 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
       pendingSentFiles.delete(payload.offerId)
       return
     }
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    await fileAction.send(bytes, {
-      target: peerId,
-      metadata: {offerId: payload.offerId, name: file.name, type: file.type},
-      onProgress: (pct, ctx) => {
-        onFileProgress?.({peerId: ctx.peerId, offerId: payload.offerId, direction: 'up', pct})
-      }
-    })
-    pendingSentFiles.delete(payload.offerId)
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      await fileAction.send(bytes, {
+        target: peerId,
+        metadata: {offerId: payload.offerId, name: file.name, type: file.type},
+        onProgress: (pct, ctx) => {
+          onFileProgress?.({peerId: ctx.peerId, offerId: payload.offerId, direction: 'up', pct})
+        }
+      })
+      // Sender-side completion: no blob (blob is only for received files) —
+      // lets the sending UI mark the transfer as done.
+      onFileDone?.({peerId, offerId: payload.offerId, name: file.name})
+    } catch {
+      // Peer disconnected mid-transfer (or the file could not be read).
+      // Swallow: don't crash, don't leak the pending entry.
+    } finally {
+      pendingSentFiles.delete(payload.offerId)
+    }
   }
 
   fileAction.onReceiveProgress = (pct, {peerId, metadata}) => {
@@ -57,10 +66,20 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
     pendingReceivedOffers.delete(`${peerId}:${offerId}`)
   }
 
+  function clearPeer(peerId) {
+    // Purge transfer state tied to a departed peer. Incoming offers are
+    // keyed by peer; sent files are broadcast offers (not peer-scoped), so
+    // they are cleaned up when answered, on send failure, or on room leave.
+    const prefix = `${peerId}:`
+    for (const key of pendingReceivedOffers.keys()) {
+      if (key.startsWith(prefix)) pendingReceivedOffers.delete(key)
+    }
+  }
+
   function clear() {
     pendingReceivedOffers.clear()
     pendingSentFiles.clear()
   }
 
-  return {sendFile, acceptFile, declineFile, clear}
+  return {sendFile, acceptFile, declineFile, clearPeer, clear}
 }
