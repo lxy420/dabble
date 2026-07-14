@@ -245,9 +245,13 @@ export function createRoom(roomCode, displayName) {
     return fileTransfer.sendFile(file)
   }
 
+  /** Returns false if the offer was gone (see files.js acceptFile). */
   function acceptFile(peerId, offerId, sink) {
-    if (!room) return
-    fileTransfer.acceptFile(peerId, offerId, sink)
+    if (!room) {
+      sink?.abort().catch(() => {})
+      return false
+    }
+    return fileTransfer.acceptFile(peerId, offerId, sink)
   }
 
   function declineFile(peerId, offerId) {

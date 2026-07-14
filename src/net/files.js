@@ -60,6 +60,9 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
     if (!payload.ok) return
     const file = offeredFiles.get(payload.offerId)
     if (!file) return
+    // Idempotency: a duplicate ok-answer for an already-running session
+    // must not spawn a second concurrent slice loop over the same channel.
+    if (senderSessions.has(`${peerId}:${payload.offerId}`)) return
     startSenderSession(peerId, payload.offerId, file)
   }
 
@@ -90,6 +93,11 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
       resolveDone = res
       rejectDone = rej
     })
+    // The slice loop's early-return guards can exit without ever awaiting
+    // `done` (e.g. failSender removed the session mid-send and rejected it)
+    // — pre-attach a no-op handler so that rejection is never "unhandled".
+    // The deliberate `await done` below still sees the rejection normally.
+    done.catch(() => {})
     const session = {
       peerId,
       offerId,
@@ -185,6 +193,16 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
     const session = receiverSessions.get(key)
     if (!session) return
 
+    // Continuity check: the data channel is ordered and reliable, so a seq
+    // gap means trystero silently dropped a slice (backpressure-timeout
+    // break) — the transfer can never be whole. Fail fast instead of
+    // waiting the full stall timeout to discover it.
+    if (seq !== session.expectedSeq) {
+      failReceiver(key)
+      return
+    }
+    session.expectedSeq++
+
     session.bytesReceived += bytes.byteLength
     resetReceiverAckTimer(key)
     session.writing = session.sink
@@ -215,11 +233,20 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
     return offerId
   }
 
+  /**
+   * Returns true if the offer was found and a receive session started;
+   * false if the offer no longer exists (peer left / already handled) —
+   * in that case no fAnswer is sent and any provided sink is aborted so
+   * the caller's writable doesn't dangle.
+   */
   function acceptFile(peerId, offerId, sink) {
     const key = `${peerId}:${offerId}`
     const offer = pendingReceivedOffers.get(key)
+    if (!offer) {
+      sink?.abort().catch(() => {})
+      return false
+    }
     fAnswerAction.send({offerId, ok: true}, {target: peerId})
-    if (!offer) return
     pendingReceivedOffers.delete(key)
     const {sliceCount} = planSlices(offer.size)
     receiverSessions.set(key, {
@@ -230,12 +257,14 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
       size: offer.size,
       sliceCount,
       bytesReceived: 0,
+      expectedSeq: 1,
       sink: sink || null,
       parts: sink ? null : [],
       writing: Promise.resolve(),
       ackTimer: null
     })
     resetReceiverAckTimer(key)
+    return true
   }
 
   function declineFile(peerId, offerId) {

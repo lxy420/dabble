@@ -42,6 +42,12 @@ const overlayTimers = new Map() // peerId -> setTimeout id (delay before showing
 const typingPeers = new Map() // peerId -> name, currently typing
 const incomingFileCards = new Map() // `${peerId}:${offerId}` -> file card api
 const outgoingFileCards = new Map() // offerId -> file card api
+// A broadcast offer can be accepted by several peers, each getting its own
+// sender session — but there is only ONE outgoing card per offer. Track every
+// session's state here so the card reflects the aggregate: progress = the
+// slowest active session, done = all ended with >=1 success, failed = all
+// ended with none. peerId -> {status: 'active'|'done'|'failed', pct}.
+const outgoingSessions = new Map() // offerId -> Map(peerId -> {status, pct})
 const pendingOfferNames = new Map() // `${peerId}:${offerId}` -> file name, for the save-picker
 const blobUrls = new Set() // object URLs created for downloaded files
 
@@ -64,7 +70,7 @@ async function startRoom(name, rawCode) {
     onSend: sendChatMessage,
     onSendFile: sendFile,
     onAcceptFile: acceptFileFlow,
-    onDeclineFile: (peerId, offerId) => roomApi.declineFile(peerId, offerId),
+    onDeclineFile: declineFileFlow,
     // Null-guarded: the panel's typing-idle timer could in theory outlive
     // the room (destroy() also clears it — belt and suspenders).
     onTyping: isTyping => roomApi?.sendTyping(isTyping)
@@ -147,6 +153,7 @@ function sendFile(file) {
  * picker is treated the same as a decline.
  */
 async function acceptFileFlow(peerId, offerId) {
+  let accepted
   if (window.showSaveFilePicker) {
     const name = pendingOfferNames.get(`${peerId}:${offerId}`)
     let writable
@@ -156,14 +163,28 @@ async function acceptFileFlow(peerId, offerId) {
     } catch {
       // User cancelled the picker (or it's unsupported at call time).
       const card = incomingFileCards.get(`${peerId}:${offerId}`)
-      roomApi.declineFile(peerId, offerId)
+      declineFileFlow(peerId, offerId)
       card?.setDeclined()
       return
     }
-    roomApi.acceptFile(peerId, offerId, writable)
+    accepted = roomApi.acceptFile(peerId, offerId, writable)
   } else {
-    roomApi.acceptFile(peerId, offerId)
+    accepted = roomApi.acceptFile(peerId, offerId)
   }
+  if (!accepted) {
+    // The offer vanished while the picker was open (peer left, room state
+    // changed) — files.js already aborted the writable; fail the card.
+    incomingFileCards.get(`${peerId}:${offerId}`)?.setFailed()
+    incomingFileCards.delete(`${peerId}:${offerId}`)
+    pendingOfferNames.delete(`${peerId}:${offerId}`)
+  }
+}
+
+/** Decline + drop this offer's card bookkeeping (mirrors done/fail cleanup). */
+function declineFileFlow(peerId, offerId) {
+  roomApi.declineFile(peerId, offerId)
+  incomingFileCards.delete(`${peerId}:${offerId}`)
+  pendingOfferNames.delete(`${peerId}:${offerId}`)
 }
 
 function wireRoomCallbacks() {
@@ -251,7 +272,7 @@ function wireRoomCallbacks() {
     if (direction === 'down') {
       incomingFileCards.get(`${peerId}:${offerId}`)?.setProgress(pct)
     } else {
-      outgoingFileCards.get(offerId)?.setProgress(pct)
+      trackOutgoingProgress(offerId, peerId, pct)
     }
   }
 
@@ -267,8 +288,7 @@ function wireRoomCallbacks() {
       incomingFileCards.delete(`${peerId}:${offerId}`)
       pendingOfferNames.delete(`${peerId}:${offerId}`)
     } else {
-      outgoingFileCards.get(offerId)?.setDone()
-      outgoingFileCards.delete(offerId)
+      settleOutgoingSession(offerId, peerId, 'done')
     }
   }
 
@@ -278,8 +298,7 @@ function wireRoomCallbacks() {
       incomingFileCards.delete(`${peerId}:${offerId}`)
       pendingOfferNames.delete(`${peerId}:${offerId}`)
     } else {
-      outgoingFileCards.get(offerId)?.setFailed()
-      outgoingFileCards.delete(offerId)
+      settleOutgoingSession(offerId, peerId, 'failed')
     }
   }
 
@@ -293,6 +312,55 @@ function wireRoomCallbacks() {
     joinErrorShown = true
     chatPanel.addNotice(`Povezivanje nije uspelo: ${error}`)
   }
+}
+
+/** Records upload progress for one peer's session of a broadcast offer and
+ * repaints the (single) outgoing card with the slowest active session. */
+function trackOutgoingProgress(offerId, peerId, pct) {
+  let sessions = outgoingSessions.get(offerId)
+  if (!sessions) {
+    sessions = new Map()
+    outgoingSessions.set(offerId, sessions)
+  }
+  const entry = sessions.get(peerId) || {status: 'active', pct: 0}
+  entry.pct = pct
+  sessions.set(peerId, entry)
+  repaintOutgoingCard(offerId, sessions)
+}
+
+/** Marks one peer's session done/failed; finalizes the card only when every
+ * session has ended — "Poslato" if at least one peer got the whole file,
+ * "Prekinuto" only when nobody did. */
+function settleOutgoingSession(offerId, peerId, status) {
+  let sessions = outgoingSessions.get(offerId)
+  if (!sessions) {
+    sessions = new Map()
+    outgoingSessions.set(offerId, sessions)
+  }
+  const entry = sessions.get(peerId) || {pct: 0}
+  entry.status = status
+  sessions.set(peerId, entry)
+
+  const states = Array.from(sessions.values())
+  if (states.some(s => s.status === 'active')) {
+    repaintOutgoingCard(offerId, sessions)
+    return
+  }
+  const card = outgoingFileCards.get(offerId)
+  if (states.some(s => s.status === 'done')) {
+    card?.setDone()
+  } else {
+    card?.setFailed()
+  }
+  outgoingFileCards.delete(offerId)
+  outgoingSessions.delete(offerId)
+}
+
+function repaintOutgoingCard(offerId, sessions) {
+  const active = Array.from(sessions.values()).filter(s => s.status === 'active')
+  if (active.length === 0) return
+  const minPct = Math.min(...active.map(s => s.pct))
+  outgoingFileCards.get(offerId)?.setProgress(minPct)
 }
 
 function clearReconnectTimer(peerId) {
@@ -388,6 +456,7 @@ function leaveRoom() {
   typingPeers.clear()
   incomingFileCards.clear()
   outgoingFileCards.clear()
+  outgoingSessions.clear()
   pendingOfferNames.clear()
   blobUrls.forEach(url => URL.revokeObjectURL(url))
   blobUrls.clear()
