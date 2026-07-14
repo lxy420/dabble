@@ -19,7 +19,8 @@ function toggleFullscreen(tile) {
 }
 
 export function createVideoGrid(rootEl) {
-  const tiles = new Map() // `${peerId}::${kind}` -> {tile, video, nameEl}
+  const tiles = new Map() // `${peerId}::${kind}` -> {tile, video, nameEl, statsEl, overlayEl}
+  let statsVisible = false
 
   function updateCount() {
     const count = Math.min(4, Math.max(1, tiles.size))
@@ -45,10 +46,27 @@ export function createVideoGrid(rootEl) {
     nameEl.className = 'tile-name'
     tile.appendChild(nameEl)
 
+    // Stats line and reconnect overlay only make sense for remote peers —
+    // we never show them on our own local tiles.
+    let statsEl = null
+    let overlayEl = null
+    if (!local) {
+      statsEl = document.createElement('div')
+      statsEl.className = 'tile-stats'
+      statsEl.hidden = !statsVisible
+      tile.appendChild(statsEl)
+
+      overlayEl = document.createElement('div')
+      overlayEl.className = 'tile-reconnect'
+      overlayEl.textContent = 'Ponovo se povezuje...'
+      overlayEl.hidden = true
+      tile.appendChild(overlayEl)
+    }
+
     tile.addEventListener('click', () => toggleFullscreen(tile))
 
     rootEl.appendChild(tile)
-    return {tile, video, nameEl}
+    return {tile, video, nameEl, statsEl, overlayEl}
   }
 
   function addTile({peerId, stream, kind, name, local}) {
@@ -85,5 +103,31 @@ export function createVideoGrid(rootEl) {
     updateCount()
   }
 
-  return {addTile, removeTile, setName, setCount}
+  /** Updates the small `720p · 4.2 Mbps · 23 ms · direct|relay` line. */
+  function setStats(peerId, text) {
+    tiles.forEach((entry, key) => {
+      if (key.startsWith(`${peerId}::`) && entry.statsEl) {
+        entry.statsEl.textContent = text
+      }
+    })
+  }
+
+  /** Toggles visibility of the stats line on every remote tile at once. */
+  function setStatsVisible(visible) {
+    statsVisible = visible
+    tiles.forEach(entry => {
+      if (entry.statsEl) entry.statsEl.hidden = !visible
+    })
+  }
+
+  /** Shows/hides the "ponovo se povezuje..." overlay for every tile of a peer. */
+  function setReconnecting(peerId, isReconnecting) {
+    tiles.forEach((entry, key) => {
+      if (key.startsWith(`${peerId}::`) && entry.overlayEl) {
+        entry.overlayEl.hidden = !isReconnecting
+      }
+    })
+  }
+
+  return {addTile, removeTile, setName, setCount, setStats, setStatsVisible, setReconnecting}
 }

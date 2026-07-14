@@ -43,7 +43,12 @@ function formatSize(bytes) {
   return `${value.toFixed(1)} ${units[i]}`
 }
 
-export function createChatPanel(rootEl, {onSend, onSendFile, onAcceptFile, onDeclineFile} = {}) {
+const TYPING_IDLE_MS = 2000
+
+export function createChatPanel(
+  rootEl,
+  {onSend, onSendFile, onAcceptFile, onDeclineFile, onTyping} = {}
+) {
   rootEl.textContent = ''
 
   const messagesEl = document.createElement('div')
@@ -89,16 +94,33 @@ export function createChatPanel(rootEl, {onSend, onSendFile, onAcceptFile, onDec
     messagesEl.scrollTop = messagesEl.scrollHeight
   }
 
+  // Outgoing typing indicator: fire true as soon as the user types, then
+  // fire false once they've been idle for a couple seconds (or right away
+  // on send) — matches the incoming behavior in setTyping() below.
+  let typingIdleTimer = null
+
+  function stopTyping() {
+    clearTimeout(typingIdleTimer)
+    typingIdleTimer = null
+    onTyping?.(false)
+  }
+
   function submitMessage() {
     const text = textInput.value.trim()
     if (!text) return
     onSend?.(text)
     textInput.value = ''
+    stopTyping()
   }
 
   sendBtn.addEventListener('click', submitMessage)
   textInput.addEventListener('keydown', event => {
     if (event.key === 'Enter') submitMessage()
+  })
+  textInput.addEventListener('input', () => {
+    onTyping?.(true)
+    clearTimeout(typingIdleTimer)
+    typingIdleTimer = setTimeout(stopTyping, TYPING_IDLE_MS)
   })
 
   attachBtn.addEventListener('click', () => fileInput.click())

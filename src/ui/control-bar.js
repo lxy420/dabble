@@ -39,6 +39,11 @@ const ICONS = {
     ['line', {x1: 12, y1: 17, x2: 12, y2: 21}]
   ],
   chat: [['path', {d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'}]],
+  stats: [
+    ['line', {x1: 6, y1: 20, x2: 6, y2: 12}],
+    ['line', {x1: 12, y1: 20, x2: 12, y2: 4}],
+    ['line', {x1: 18, y1: 20, x2: 18, y2: 14}]
+  ],
   leave: [
     ['path', {d: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4'}],
     ['line', {x1: 16, y1: 17, x2: 21, y2: 12}],
@@ -64,7 +69,7 @@ function applyState(btn, on) {
 
 export function createControlBar(
   rootEl,
-  {onToggleMic, onToggleCam, onToggleScreen, onToggleChat, onLeave} = {}
+  {onToggleMic, onToggleCam, onToggleScreen, onToggleChat, onToggleStats, onLeave} = {}
 ) {
   rootEl.textContent = ''
 
@@ -73,6 +78,8 @@ export function createControlBar(
   const screenBtn = makeToggleButton('screen', 'Deli ekran')
   applyState(screenBtn, false) // screen sharing starts off
   const chatBtn = makeToggleButton('chat', 'Chat')
+  const statsBtn = makeToggleButton('stats', 'Statistika')
+  applyState(statsBtn, false) // stats line starts hidden
 
   const leaveBtn = document.createElement('button')
   leaveBtn.type = 'button'
@@ -92,17 +99,21 @@ export function createControlBar(
     onToggleChat?.()
   })
 
+  statsBtn.addEventListener('click', () => onToggleStats?.())
+
   leaveBtn.addEventListener('click', () => onLeave?.())
 
   rootEl.appendChild(micBtn)
   rootEl.appendChild(camBtn)
   rootEl.appendChild(screenBtn)
   rootEl.appendChild(chatBtn)
+  rootEl.appendChild(statsBtn)
   rootEl.appendChild(leaveBtn)
 
   return {
     setMic: on => applyState(micBtn, on),
     setCam: on => applyState(camBtn, on),
-    setScreen: on => applyState(screenBtn, on)
+    setScreen: on => applyState(screenBtn, on),
+    setStats: on => applyState(statsBtn, on)
   }
 }

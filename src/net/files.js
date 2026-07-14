@@ -55,6 +55,9 @@ export function createFileTransfer(room, {onFileOffer, onFileProgress, onFileDon
     const offerId = crypto.randomUUID()
     pendingSentFiles.set(offerId, file)
     fOfferAction.send({offerId, name: file.name, size: file.size, type: file.type})
+    // Returned so the caller (main.js) can track its own "outgoing" file
+    // card and match later onFileProgress/onFileDone events by offerId.
+    return offerId
   }
 
   function acceptFile(peerId, offerId) {

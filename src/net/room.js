@@ -223,7 +223,7 @@ export function createRoom(roomCode, displayName) {
 
   function sendFile(file) {
     if (!room) return
-    fileTransfer.sendFile(file)
+    return fileTransfer.sendFile(file)
   }
 
   function acceptFile(peerId, offerId) {
