@@ -43,6 +43,7 @@ export function createRoom(roomCode, displayName) {
     onFileOffer: null,
     onFileProgress: null,
     onFileDone: null,
+    onFileFailed: null,
     onStats: null,
     onJoinError: null,
     join,
@@ -97,7 +98,8 @@ export function createRoom(roomCode, displayName) {
     fileTransfer = createFileTransfer(room, {
       onFileOffer: payload => api.onFileOffer?.(payload),
       onFileProgress: payload => api.onFileProgress?.(payload),
-      onFileDone: payload => api.onFileDone?.(payload)
+      onFileDone: payload => api.onFileDone?.(payload),
+      onFileFailed: payload => api.onFileFailed?.(payload)
     })
 
     nameAction.onMessage = (name, {peerId}) => {
@@ -243,9 +245,9 @@ export function createRoom(roomCode, displayName) {
     return fileTransfer.sendFile(file)
   }
 
-  function acceptFile(peerId, offerId) {
+  function acceptFile(peerId, offerId, sink) {
     if (!room) return
-    fileTransfer.acceptFile(peerId, offerId)
+    fileTransfer.acceptFile(peerId, offerId, sink)
   }
 
   function declineFile(peerId, offerId) {

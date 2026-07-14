@@ -329,6 +329,13 @@ export function createChatPanel(
       }
     }
 
+    /** Receiver saved straight to disk (no blob/download link to offer). */
+    function setSaved() {
+      progress.hidden = true
+      clearActions()
+      status.textContent = 'Sačuvano'
+    }
+
     /** Transfer can never complete (peer left mid-transfer, etc.). */
     function setFailed() {
       progress.hidden = true
@@ -336,7 +343,7 @@ export function createChatPanel(
       status.textContent = 'Prekinuto'
     }
 
-    return {setProgress, setDone, setDeclined, setFailed}
+    return {setProgress, setDone, setDeclined, setFailed, setSaved}
   }
 
   return {addMessage, addNotice, setTyping, addFileCard, destroy}

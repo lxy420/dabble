@@ -11,6 +11,7 @@ import {createControlBar} from './ui/control-bar.js'
 import {playJoin, playLeave, playMessage} from './ui/sounds.js'
 
 const RECONNECT_GRACE_MS = 15000
+const OVERLAY_DELAY_MS = 3000
 const CONNECT_CHECK_MS = 20000
 const NO_MEDIA_NOTICE = 'Kamera/mikrofon nedostupni — možeš da pratiš i pišeš.'
 const CONNECT_FAIL_NOTICE =
@@ -37,10 +38,11 @@ let joinErrorShown = false
 const peerNames = new Map() // peerId -> last known display name
 const knownPeerIds = new Set() // peers we've already shown a join notice for
 const reconnectTimers = new Map() // peerId -> setTimeout id (grace period)
+const overlayTimers = new Map() // peerId -> setTimeout id (delay before showing the overlay)
 const typingPeers = new Map() // peerId -> name, currently typing
 const incomingFileCards = new Map() // `${peerId}:${offerId}` -> file card api
 const outgoingFileCards = new Map() // offerId -> file card api
-const outgoingCardPeers = new Map() // offerId -> peerId currently receiving that upload
+const pendingOfferNames = new Map() // `${peerId}:${offerId}` -> file name, for the save-picker
 const blobUrls = new Set() // object URLs created for downloaded files
 
 boot()
@@ -61,7 +63,7 @@ async function startRoom(name, rawCode) {
   chatPanel = createChatPanel(chatPanelEl, {
     onSend: sendChatMessage,
     onSendFile: sendFile,
-    onAcceptFile: (peerId, offerId) => roomApi.acceptFile(peerId, offerId),
+    onAcceptFile: acceptFileFlow,
     onDeclineFile: (peerId, offerId) => roomApi.declineFile(peerId, offerId),
     // Null-guarded: the panel's typing-idle timer could in theory outlive
     // the room (destroy() also clears it — belt and suspenders).
@@ -136,6 +138,34 @@ function sendFile(file) {
   outgoingFileCards.set(offerId, card)
 }
 
+/**
+ * Accept-file flow: on browsers with the File System Access API, opens the
+ * save picker FIRST (synchronously in the click gesture, before any other
+ * await) and hands the resulting WritableStream down to roomApi so files.js
+ * can stream slices straight to disk instead of buffering the whole file in
+ * memory. Falls back to the old in-memory (Blob) path otherwise. A cancelled
+ * picker is treated the same as a decline.
+ */
+async function acceptFileFlow(peerId, offerId) {
+  if (window.showSaveFilePicker) {
+    const name = pendingOfferNames.get(`${peerId}:${offerId}`)
+    let writable
+    try {
+      const handle = await window.showSaveFilePicker({suggestedName: name})
+      writable = await handle.createWritable()
+    } catch {
+      // User cancelled the picker (or it's unsupported at call time).
+      const card = incomingFileCards.get(`${peerId}:${offerId}`)
+      roomApi.declineFile(peerId, offerId)
+      card?.setDeclined()
+      return
+    }
+    roomApi.acceptFile(peerId, offerId, writable)
+  } else {
+    roomApi.acceptFile(peerId, offerId)
+  }
+}
+
 function wireRoomCallbacks() {
   roomApi.onPeerJoined = ({peerId, name}) => {
     peerNames.set(peerId, name)
@@ -154,14 +184,24 @@ function wireRoomCallbacks() {
     if (typingPeers.delete(peerId)) {
       chatPanel.setTyping(Array.from(typingPeers.values()))
     }
-    failFileCardsForPeer(peerId)
-    // MVP reconnect grace: trystero re-announces the same peerId if the
-    // connection recovers on its own — keep the tile around with an
-    // overlay for a while instead of yanking it immediately. The departure
-    // notice + sound fire only when the grace expires (a real departure);
-    // a rejoin within the window clears this timer and stays silent.
-    videoGrid.setReconnecting(peerId, true)
+    // File-transfer cards tied to this peer are failed via roomApi's own
+    // onFileFailed (fired from files.js's clearPeer, called before this
+    // handler runs) — no separate bookkeeping needed here.
+
+    // MVP reconnect grace: trystero churns connections in normal operation
+    // (a re-announce can replace a live peer connection, or a secondary
+    // handshake can fail and recover within a second or two) — onPeerLeave
+    // fires every time even though the call recovers on its own almost
+    // immediately. Arm the 15s removal timer right away (a real departure
+    // still needs to notice + remove the tile eventually), but DON'T show
+    // the "reconnecting" overlay instantly — that's what made brief micro
+    // churn look like a scary outage on a working video. Instead, delay the
+    // overlay by OVERLAY_DELAY_MS and only show it if the peer is still
+    // gone by then. A rejoin within that window (clearReconnectTimer) stays
+    // completely silent; a real outage shows the overlay from t+3s until
+    // rejoin or removal at t+15s.
     clearTimeout(reconnectTimers.get(peerId)) // dedupe if onPeerLeft re-fires
+    clearTimeout(overlayTimers.get(peerId))
     const timer = setTimeout(() => {
       reconnectTimers.delete(peerId)
       chatPanel.addNotice(`${peerNames.get(peerId) || 'gost'} je izašao`)
@@ -172,6 +212,11 @@ function wireRoomCallbacks() {
       peerNames.delete(peerId)
     }, RECONNECT_GRACE_MS)
     reconnectTimers.set(peerId, timer)
+    const overlayTimer = setTimeout(() => {
+      overlayTimers.delete(peerId)
+      if (reconnectTimers.has(peerId)) videoGrid.setReconnecting(peerId, true)
+    }, OVERLAY_DELAY_MS)
+    overlayTimers.set(peerId, overlayTimer)
   }
 
   roomApi.onPeerStream = ({peerId, stream, kind}) => {
@@ -199,29 +244,42 @@ function wireRoomCallbacks() {
   roomApi.onFileOffer = ({peerId, offerId, name, size}) => {
     const card = chatPanel.addFileCard({offerId, peerId, name, size, direction: 'down', incoming: true})
     incomingFileCards.set(`${peerId}:${offerId}`, card)
+    pendingOfferNames.set(`${peerId}:${offerId}`, name)
   }
 
   roomApi.onFileProgress = ({peerId, offerId, direction, pct}) => {
     if (direction === 'down') {
       incomingFileCards.get(`${peerId}:${offerId}`)?.setProgress(pct)
     } else {
-      // Remember which peer is receiving this upload so the card can be
-      // marked failed if that peer disconnects mid-transfer.
-      outgoingCardPeers.set(offerId, peerId)
       outgoingFileCards.get(offerId)?.setProgress(pct)
     }
   }
 
-  roomApi.onFileDone = ({peerId, offerId, blob, name}) => {
+  roomApi.onFileDone = ({peerId, offerId, blob, name, saved}) => {
     if (blob) {
       const url = URL.createObjectURL(blob)
       blobUrls.add(url)
       incomingFileCards.get(`${peerId}:${offerId}`)?.setDone(url)
       incomingFileCards.delete(`${peerId}:${offerId}`)
+      pendingOfferNames.delete(`${peerId}:${offerId}`)
+    } else if (saved) {
+      incomingFileCards.get(`${peerId}:${offerId}`)?.setSaved()
+      incomingFileCards.delete(`${peerId}:${offerId}`)
+      pendingOfferNames.delete(`${peerId}:${offerId}`)
     } else {
       outgoingFileCards.get(offerId)?.setDone()
       outgoingFileCards.delete(offerId)
-      outgoingCardPeers.delete(offerId)
+    }
+  }
+
+  roomApi.onFileFailed = ({peerId, offerId, direction}) => {
+    if (direction === 'down') {
+      incomingFileCards.get(`${peerId}:${offerId}`)?.setFailed()
+      incomingFileCards.delete(`${peerId}:${offerId}`)
+      pendingOfferNames.delete(`${peerId}:${offerId}`)
+    } else {
+      outgoingFileCards.get(offerId)?.setFailed()
+      outgoingFileCards.delete(offerId)
     }
   }
 
@@ -237,33 +295,16 @@ function wireRoomCallbacks() {
   }
 }
 
-/**
- * Marks every in-flight file card tied to a departed peer as "Prekinuto":
- * incoming offers/downloads from them can never finish, and an upload they
- * were receiving is dead too (transfers don't resume across reconnects).
- */
-function failFileCardsForPeer(peerId) {
-  const prefix = `${peerId}:`
-  incomingFileCards.forEach((card, key) => {
-    if (key.startsWith(prefix)) {
-      card.setFailed()
-      incomingFileCards.delete(key)
-    }
-  })
-  outgoingCardPeers.forEach((cardPeerId, offerId) => {
-    if (cardPeerId === peerId) {
-      outgoingFileCards.get(offerId)?.setFailed()
-      outgoingFileCards.delete(offerId)
-      outgoingCardPeers.delete(offerId)
-    }
-  })
-}
-
 function clearReconnectTimer(peerId) {
   const timer = reconnectTimers.get(peerId)
   if (timer) {
     clearTimeout(timer)
     reconnectTimers.delete(peerId)
+  }
+  const overlayTimer = overlayTimers.get(peerId)
+  if (overlayTimer) {
+    clearTimeout(overlayTimer)
+    overlayTimers.delete(peerId)
   }
   videoGrid.setReconnecting(peerId, false)
 }
@@ -340,12 +381,14 @@ function leaveRoom() {
   joinErrorShown = false
   reconnectTimers.forEach(timer => clearTimeout(timer))
   reconnectTimers.clear()
+  overlayTimers.forEach(timer => clearTimeout(timer))
+  overlayTimers.clear()
   peerNames.clear()
   knownPeerIds.clear()
   typingPeers.clear()
   incomingFileCards.clear()
   outgoingFileCards.clear()
-  outgoingCardPeers.clear()
+  pendingOfferNames.clear()
   blobUrls.forEach(url => URL.revokeObjectURL(url))
   blobUrls.clear()
   statsVisible = false
