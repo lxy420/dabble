@@ -5,7 +5,14 @@ const NAME_STORAGE_KEY = 'dabble-name'
 
 function readHashCode() {
   const raw = location.hash.replace(/^#/, '')
-  return raw ? decodeURIComponent(raw) : ''
+  if (!raw) return ''
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    // Malformed percent-encoding (e.g. "#abc%") — treat as no prefill
+    // instead of letting the throw blank the whole join screen.
+    return ''
+  }
 }
 
 export function renderJoinScreen({onJoin, generateCode} = {}) {

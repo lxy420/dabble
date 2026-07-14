@@ -11,7 +11,10 @@ import {createControlBar} from './ui/control-bar.js'
 import {playJoin, playLeave, playMessage} from './ui/sounds.js'
 
 const RECONNECT_GRACE_MS = 15000
+const CONNECT_CHECK_MS = 20000
 const NO_MEDIA_NOTICE = 'Kamera/mikrofon nedostupni — možeš da pratiš i pišeš.'
+const CONNECT_FAIL_NOTICE =
+  'Ne mogu da se povežem na signaling mrežu — proveri internet konekciju pa pokušaj ponovo.'
 
 const joinScreenEl = document.getElementById('join-screen')
 const roomScreenEl = document.getElementById('room-screen')
@@ -28,6 +31,8 @@ let displayName = ''
 let camStream = null
 let screenStream = null
 let statsVisible = false
+let connectCheckTimer = null
+let joinErrorShown = false
 
 const peerNames = new Map() // peerId -> last known display name
 const knownPeerIds = new Set() // peers we've already shown a join notice for
@@ -77,6 +82,20 @@ async function startRoom(name, rawCode) {
 
   joinScreenEl.hidden = true
   roomScreenEl.hidden = false
+
+  // Belt-and-suspenders connectivity check: trystero's onJoinError only
+  // fires on failed peer handshakes, so "every relay unreachable" would
+  // otherwise stay silent forever. If after a while we have neither a peer
+  // nor a single open relay socket, tell the user instead of spinning.
+  // Deliberately NOT kicking them out — peers might simply be absent.
+  const checkedRoom = roomApi
+  connectCheckTimer = setTimeout(() => {
+    connectCheckTimer = null
+    if (roomApi !== checkedRoom) return
+    if (roomApi.peerCount() === 0 && !roomApi.hasRelayConnection()) {
+      chatPanel.addNotice(CONNECT_FAIL_NOTICE)
+    }
+  }, CONNECT_CHECK_MS)
 
   // Session guard: getCameraStream can settle after this room was already
   // left (or another one joined) — without the check, a stale resolution
@@ -130,9 +149,6 @@ function wireRoomCallbacks() {
   }
 
   roomApi.onPeerLeft = ({peerId}) => {
-    const name = peerNames.get(peerId) || 'gost'
-    chatPanel.addNotice(`${name} je izašao`)
-    playLeave()
     // A peer that disconnects mid-typing never sends isTyping: false —
     // drop it from the typing set so the indicator doesn't stick forever.
     if (typingPeers.delete(peerId)) {
@@ -141,10 +157,15 @@ function wireRoomCallbacks() {
     failFileCardsForPeer(peerId)
     // MVP reconnect grace: trystero re-announces the same peerId if the
     // connection recovers on its own — keep the tile around with an
-    // overlay for a while instead of yanking it immediately.
+    // overlay for a while instead of yanking it immediately. The departure
+    // notice + sound fire only when the grace expires (a real departure);
+    // a rejoin within the window clears this timer and stays silent.
     videoGrid.setReconnecting(peerId, true)
+    clearTimeout(reconnectTimers.get(peerId)) // dedupe if onPeerLeft re-fires
     const timer = setTimeout(() => {
       reconnectTimers.delete(peerId)
+      chatPanel.addNotice(`${peerNames.get(peerId) || 'gost'} je izašao`)
+      playLeave()
       videoGrid.removeTile(peerId, 'camera')
       videoGrid.removeTile(peerId, 'screen')
       knownPeerIds.delete(peerId)
@@ -206,6 +227,13 @@ function wireRoomCallbacks() {
 
   roomApi.onStats = ({peerId, stats}) => {
     videoGrid.setStats(peerId, formatStats(stats))
+  }
+
+  roomApi.onJoinError = ({error}) => {
+    // Can fire once per failed peer handshake — one notice is enough.
+    if (joinErrorShown) return
+    joinErrorShown = true
+    chatPanel.addNotice(`Povezivanje nije uspelo: ${error}`)
   }
 }
 
@@ -307,6 +335,9 @@ function leaveRoom() {
   camStream = null
   screenStream = null
 
+  clearTimeout(connectCheckTimer)
+  connectCheckTimer = null
+  joinErrorShown = false
   reconnectTimers.forEach(timer => clearTimeout(timer))
   reconnectTimers.clear()
   peerNames.clear()

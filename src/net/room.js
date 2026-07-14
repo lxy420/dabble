@@ -8,7 +8,7 @@
 // `send`/`addStream` take an options object (`{target, metadata, onProgress}`)
 // rather than positional peerId/metadata arguments. The code below targets
 // that real, installed API.
-import {joinRoom, selfId} from 'trystero'
+import {getRelaySockets, joinRoom, selfId} from 'trystero'
 import {APP_ID, rtcConfig} from '../config.js'
 import {applyQualityToPeers} from './media.js'
 import {createFileTransfer} from './files.js'
@@ -44,6 +44,7 @@ export function createRoom(roomCode, displayName) {
     onFileProgress: null,
     onFileDone: null,
     onStats: null,
+    onJoinError: null,
     join,
     leave,
     sendChat,
@@ -53,11 +54,23 @@ export function createRoom(roomCode, displayName) {
     declineFile,
     shareStream,
     unshareStream,
-    peerCount
+    peerCount,
+    hasRelayConnection
   }
 
   function peerCount() {
     return room ? Object.keys(room.getPeers()).length : 0
+  }
+
+  /** True if at least one signaling relay WebSocket is currently open. */
+  function hasRelayConnection() {
+    try {
+      return Object.values(getRelaySockets() || {}).some(
+        socket => socket?.readyState === WebSocket.OPEN
+      )
+    } catch {
+      return false
+    }
   }
 
   function markPeerJoined(peerId, name) {
@@ -72,7 +85,11 @@ export function createRoom(roomCode, displayName) {
 
   function join() {
     if (room) return
-    room = joinRoom({appId: APP_ID, password: roomCode, rtcConfig}, roomCode)
+    // Third joinRoom argument is trystero 0.25's JoinRoomCallbacks —
+    // onJoinError fires when a peer handshake/join fails outright.
+    room = joinRoom({appId: APP_ID, password: roomCode, rtcConfig}, roomCode, {
+      onJoinError: details => api.onJoinError?.({error: details?.error || 'join failed'})
+    })
 
     nameAction = room.makeAction('name')
     chatAction = room.makeAction('chat')
