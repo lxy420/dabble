@@ -130,6 +130,10 @@ export function createChatPanel(
   })
 
   // Drag & drop anywhere on the room screen opens the send-file flow.
+  // The drop zone is a persistent element that outlives this panel, so the
+  // handlers are kept by reference and removed again in destroy() — without
+  // that, every join would stack another listener set and a single drop
+  // would fire onSendFile once per past join.
   const dropZone = rootEl.closest('#room-screen') || document.body
   let dragDepth = 0
 
@@ -137,27 +141,50 @@ export function createChatPanel(
     return Array.from(event.dataTransfer?.types || []).includes('Files')
   }
 
-  dropZone.addEventListener('dragover', event => {
+  function onDragOver(event) {
     if (!hasFiles(event)) return
     event.preventDefault()
-  })
-  dropZone.addEventListener('dragenter', event => {
+  }
+
+  function onDragEnter(event) {
     if (!hasFiles(event)) return
     event.preventDefault()
     dragDepth++
     dropZone.classList.add('drag-over')
-  })
-  dropZone.addEventListener('dragleave', () => {
+  }
+
+  function onDragLeave() {
     dragDepth = Math.max(0, dragDepth - 1)
     if (dragDepth === 0) dropZone.classList.remove('drag-over')
-  })
-  dropZone.addEventListener('drop', event => {
+  }
+
+  function onDrop(event) {
     if (!event.dataTransfer?.files?.length) return
     event.preventDefault()
     dragDepth = 0
     dropZone.classList.remove('drag-over')
     Array.from(event.dataTransfer.files).forEach(file => onSendFile?.(file))
-  })
+  }
+
+  dropZone.addEventListener('dragover', onDragOver)
+  dropZone.addEventListener('dragenter', onDragEnter)
+  dropZone.addEventListener('dragleave', onDragLeave)
+  dropZone.addEventListener('drop', onDrop)
+
+  /**
+   * Tears down everything this panel attached outside its own root element:
+   * the drop-zone listeners above and any pending typing-idle timer (which
+   * would otherwise fire onTyping(false) after the room is gone).
+   */
+  function destroy() {
+    dropZone.removeEventListener('dragover', onDragOver)
+    dropZone.removeEventListener('dragenter', onDragEnter)
+    dropZone.removeEventListener('dragleave', onDragLeave)
+    dropZone.removeEventListener('drop', onDrop)
+    dropZone.classList.remove('drag-over')
+    clearTimeout(typingIdleTimer)
+    typingIdleTimer = null
+  }
 
   function addMessage({name, text, ts, self}) {
     const msg = document.createElement('div')
@@ -302,8 +329,15 @@ export function createChatPanel(
       }
     }
 
-    return {setProgress, setDone, setDeclined}
+    /** Transfer can never complete (peer left mid-transfer, etc.). */
+    function setFailed() {
+      progress.hidden = true
+      clearActions()
+      status.textContent = 'Prekinuto'
+    }
+
+    return {setProgress, setDone, setDeclined, setFailed}
   }
 
-  return {addMessage, addNotice, setTyping, addFileCard}
+  return {addMessage, addNotice, setTyping, addFileCard, destroy}
 }

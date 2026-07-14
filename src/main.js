@@ -35,6 +35,7 @@ const reconnectTimers = new Map() // peerId -> setTimeout id (grace period)
 const typingPeers = new Map() // peerId -> name, currently typing
 const incomingFileCards = new Map() // `${peerId}:${offerId}` -> file card api
 const outgoingFileCards = new Map() // offerId -> file card api
+const outgoingCardPeers = new Map() // offerId -> peerId currently receiving that upload
 const blobUrls = new Set() // object URLs created for downloaded files
 
 boot()
@@ -57,7 +58,9 @@ async function startRoom(name, rawCode) {
     onSendFile: sendFile,
     onAcceptFile: (peerId, offerId) => roomApi.acceptFile(peerId, offerId),
     onDeclineFile: (peerId, offerId) => roomApi.declineFile(peerId, offerId),
-    onTyping: isTyping => roomApi.sendTyping(isTyping)
+    // Null-guarded: the panel's typing-idle timer could in theory outlive
+    // the room (destroy() also clears it — belt and suspenders).
+    onTyping: isTyping => roomApi?.sendTyping(isTyping)
   })
   controlBar = createControlBar(controlBarEl, {
     onToggleMic: toggleMic,
@@ -75,14 +78,23 @@ async function startRoom(name, rawCode) {
   joinScreenEl.hidden = true
   roomScreenEl.hidden = false
 
+  // Session guard: getCameraStream can settle after this room was already
+  // left (or another one joined) — without the check, a stale resolution
+  // would leak the camera and touch the wrong (or torn-down) UI.
+  const session = roomApi
   try {
-    camStream = await getCameraStream()
+    const stream = await getCameraStream()
+    if (roomApi !== session) {
+      stopStream(stream)
+      return
+    }
+    camStream = stream
     videoGrid.addTile({peerId: roomApi.selfId, stream: camStream, kind: 'camera', name: displayName, local: true})
     roomApi.shareStream(camStream, 'camera')
   } catch {
     // Permission denied, no device, or an insecure context — MVP falls
     // back to chat-only rather than blocking the room.
-    chatPanel.addNotice(NO_MEDIA_NOTICE)
+    if (roomApi === session) chatPanel.addNotice(NO_MEDIA_NOTICE)
   }
 }
 
@@ -121,6 +133,12 @@ function wireRoomCallbacks() {
     const name = peerNames.get(peerId) || 'gost'
     chatPanel.addNotice(`${name} je izašao`)
     playLeave()
+    // A peer that disconnects mid-typing never sends isTyping: false —
+    // drop it from the typing set so the indicator doesn't stick forever.
+    if (typingPeers.delete(peerId)) {
+      chatPanel.setTyping(Array.from(typingPeers.values()))
+    }
+    failFileCardsForPeer(peerId)
     // MVP reconnect grace: trystero re-announces the same peerId if the
     // connection recovers on its own — keep the tile around with an
     // overlay for a while instead of yanking it immediately.
@@ -166,6 +184,9 @@ function wireRoomCallbacks() {
     if (direction === 'down') {
       incomingFileCards.get(`${peerId}:${offerId}`)?.setProgress(pct)
     } else {
+      // Remember which peer is receiving this upload so the card can be
+      // marked failed if that peer disconnects mid-transfer.
+      outgoingCardPeers.set(offerId, peerId)
       outgoingFileCards.get(offerId)?.setProgress(pct)
     }
   }
@@ -179,12 +200,35 @@ function wireRoomCallbacks() {
     } else {
       outgoingFileCards.get(offerId)?.setDone()
       outgoingFileCards.delete(offerId)
+      outgoingCardPeers.delete(offerId)
     }
   }
 
   roomApi.onStats = ({peerId, stats}) => {
     videoGrid.setStats(peerId, formatStats(stats))
   }
+}
+
+/**
+ * Marks every in-flight file card tied to a departed peer as "Prekinuto":
+ * incoming offers/downloads from them can never finish, and an upload they
+ * were receiving is dead too (transfers don't resume across reconnects).
+ */
+function failFileCardsForPeer(peerId) {
+  const prefix = `${peerId}:`
+  incomingFileCards.forEach((card, key) => {
+    if (key.startsWith(prefix)) {
+      card.setFailed()
+      incomingFileCards.delete(key)
+    }
+  })
+  outgoingCardPeers.forEach((cardPeerId, offerId) => {
+    if (cardPeerId === peerId) {
+      outgoingFileCards.get(offerId)?.setFailed()
+      outgoingFileCards.delete(offerId)
+      outgoingCardPeers.delete(offerId)
+    }
+  })
 }
 
 function clearReconnectTimer(peerId) {
@@ -257,6 +301,7 @@ function toggleStats() {
 
 function leaveRoom() {
   roomApi?.leave()
+  chatPanel?.destroy() // unhooks drop-zone listeners + pending typing timer
   stopStream(camStream)
   stopStream(screenStream)
   camStream = null
@@ -269,6 +314,7 @@ function leaveRoom() {
   typingPeers.clear()
   incomingFileCards.clear()
   outgoingFileCards.clear()
+  outgoingCardPeers.clear()
   blobUrls.forEach(url => URL.revokeObjectURL(url))
   blobUrls.clear()
   statsVisible = false
