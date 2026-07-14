@@ -33,6 +33,14 @@ body {
   height: 100vh;
 }
 
+/* #join-screen/#room-screen set their own `display` via ID selectors below,
+   which otherwise out-specificity the UA stylesheet's `[hidden] { display:
+   none }` rule and would make the `hidden` attribute a no-op. */
+#join-screen[hidden],
+#room-screen[hidden] {
+  display: none;
+}
+
 /* ---------- Join screen ---------- */
 
 #join-screen {
@@ -42,6 +50,31 @@ body {
   align-items: center;
   justify-content: center;
   gap: 16px;
+}
+
+.join-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(90vw, 340px);
+}
+
+.app-title {
+  margin: 0 0 8px;
+  text-align: center;
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.join-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.join-actions .btn {
+  flex: 1;
 }
 
 /* ---------- Room screen layout contract ---------- */
@@ -113,6 +146,23 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  cursor: pointer;
+}
+
+/* Screen-share tiles get grid priority: shown first, and widened when
+   sharing alongside other participants in a 2x2 layout. */
+.tile.screen {
+  order: -1;
+}
+
+#video-grid[data-count='3'] .tile.screen,
+#video-grid[data-count='4'] .tile.screen {
+  grid-column: span 2;
+}
+
+#room-screen.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
 }
 
 .tile video {
@@ -215,6 +265,41 @@ textarea::placeholder {
   color: var(--text-dim);
 }
 
+/* ---------- Chat panel structure ---------- */
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.chat-typing {
+  padding: 4px 12px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.chat-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.chat-input-row input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.msg-notice {
+  padding: 4px 12px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
 /* ---------- Chat messages ---------- */
 
 .msg {
@@ -222,6 +307,10 @@ textarea::placeholder {
   flex-direction: column;
   gap: 2px;
   padding: 6px 12px;
+}
+
+.msg.self .msg-author {
+  color: var(--ok);
 }
 
 .msg-author {
@@ -260,4 +349,40 @@ textarea::placeholder {
   width: 100%;
   height: 6px;
   accent-color: var(--accent);
+}
+
+.file-card-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-card-name {
+  font-size: 0.9rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-card-size {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.file-card-status {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.file-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.file-card-actions .btn {
+  padding: 6px 12px;
+  font-size: 0.82rem;
 }
